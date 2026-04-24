@@ -1,0 +1,77 @@
+"""
+IntelliAssess — AI-Powered Credit Appraisal & Risk Assessment Platform
+Main application entry point.
+"""
+
+import os
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from dotenv import load_dotenv
+
+# LOAD ENVIRONMENT VARIABLES FIRST!
+load_dotenv()
+
+# Import our new API routers AFTER loading the .env
+from app.routes import documents, analysis, research, reports, history
+
+app = FastAPI(
+    title="IntelliAssess API",
+    description="AI-Powered Credit Appraisal & Risk Assessment Platform",
+    version="0.1.0",
+)
+
+# CORS — allow frontend origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # tighten in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---- Global Exception Handler ----
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch any unhandled exception and return a clean JSON error."""
+    print(f"[GLOBAL ERROR] {request.method} {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "error",
+            "message": f"Internal server error: {str(exc)}",
+            "path": str(request.url.path)
+        }
+    )
+
+
+# ---- Health & Status Endpoints ----
+@app.get("/")
+async def root():
+    return {"message": "IntelliAssess API is running 🚀"}
+
+
+@app.get("/health")
+async def health_check():
+    """Health check with environment validation."""
+    issues = []
+    
+    if not os.getenv("GROQ_API_KEY"):
+        issues.append("GROQ_API_KEY not set — AI features will use fallbacks")
+    
+    if not os.path.exists("temp_uploads"):
+        issues.append("temp_uploads directory missing")
+    
+    return {
+        "status": "healthy" if not issues else "degraded",
+        "issues": issues if issues else None
+    }
+
+
+# ----- Route registration -----
+app.include_router(documents.router, prefix="/api/v1/documents", tags=["Documents"])
+app.include_router(analysis.router, prefix="/api/v1/analysis", tags=["Analysis"])
+app.include_router(research.router, prefix="/api/v1/research", tags=["Research & Insights"])
+app.include_router(reports.router, prefix="/api/v1/reports", tags=["Reports"])
+app.include_router(history.router, prefix="/api/v1/history", tags=["History"])
