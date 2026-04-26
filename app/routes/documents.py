@@ -1,3 +1,9 @@
+# =============================================================================
+# CREDENT — Document Ingestion & PDF Forensics Route
+# A product of Asenra | https://asenra.in
+# Copyright (c) 2026 Asenra. All rights reserved.
+# Unauthorized use, reproduction, or distribution is strictly prohibited.
+# =============================================================================
 import os
 import shutil
 import pikepdf

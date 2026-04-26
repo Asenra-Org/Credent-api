@@ -1,3 +1,9 @@
+# =============================================================================
+# CREDENT — Integrity Analysis Route
+# A product of Asenra | https://asenra.in
+# Copyright (c) 2026 Asenra. All rights reserved.
+# Unauthorized use, reproduction, or distribution is strictly prohibited.
+# =============================================================================
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional

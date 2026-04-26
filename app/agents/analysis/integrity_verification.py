@@ -1,3 +1,9 @@
+# =============================================================================
+# CREDENT — Integrity Verification Agent (GST vs Bank Cross-Validation)
+# A product of Asenra | https://asenra.in
+# Copyright (c) 2026 Asenra. All rights reserved.
+# Unauthorized use, reproduction, or distribution is strictly prohibited.
+# =============================================================================
 import pandas as pd
 import numpy as np
 

@@ -1,8 +1,10 @@
-"""
-Multi-Agent Coordinator (Reasoning Hub)
-Orchestrates all specialized agents, builds evidence trails,
-and generates explainable audit logs.
-"""
+# =============================================================================
+# CREDENT — Multi-Agent Coordinator (Orchestration & Audit Trail)
+# A product of Asenra | https://asenra.in
+# Copyright (c) 2026 Asenra. All rights reserved.
+# Unauthorized use, reproduction, or distribution is strictly prohibited.
+# =============================================================================
+
 
 
 class AgentCoordinator:

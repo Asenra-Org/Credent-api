@@ -1,3 +1,9 @@
+# =============================================================================
+# CREDENT — Database Layer (Supabase Primary / SQLite Fallback)
+# A product of Asenra | https://asenra.in
+# Copyright (c) 2026 Asenra. All rights reserved.
+# Unauthorized use, reproduction, or distribution is strictly prohibited.
+# =============================================================================
 import os
 import json
 from datetime import datetime
@@ -12,7 +18,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # FALLBACK SQLITE CONFIG (Using absolute path to avoid Windows reloader issues)
 import sqlite3
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "intelliassess.db")
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credent.db")
 
 def _get_supabase() -> Client:
     # Print status for debugging startup

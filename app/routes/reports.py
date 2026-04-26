@@ -1,3 +1,9 @@
+# =============================================================================
+# CREDENT — CAM Generation & Loan Status Route
+# A product of Asenra | https://asenra.in
+# Copyright (c) 2026 Asenra. All rights reserved.
+# Unauthorized use, reproduction, or distribution is strictly prohibited.
+# =============================================================================
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, ValidationError, Field
 from typing import Dict, Any

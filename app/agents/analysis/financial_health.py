@@ -1,7 +1,10 @@
-"""
-Financial Health Agent
-Extracts and analyzes revenue, margins, cash flow, and key financial ratios.
-"""
+# =============================================================================
+# CREDENT — Financial Health Agent (Ratio Analysis & Cash Flow Assessment)
+# A product of Asenra | https://asenra.in
+# Copyright (c) 2026 Asenra. All rights reserved.
+# Unauthorized use, reproduction, or distribution is strictly prohibited.
+# =============================================================================
+
 
 
 class FinancialHealthAgent:

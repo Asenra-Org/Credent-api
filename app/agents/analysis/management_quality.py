@@ -1,7 +1,10 @@
-"""
-Management Quality Agent
-Analyzes promoter track record, shareholding patterns, and governance quality.
-"""
+# =============================================================================
+# CREDENT — Management Quality Agent (Promoter & Governance Analysis)
+# A product of Asenra | https://asenra.in
+# Copyright (c) 2026 Asenra. All rights reserved.
+# Unauthorized use, reproduction, or distribution is strictly prohibited.
+# =============================================================================
+
 
 
 class ManagementQualityAgent:

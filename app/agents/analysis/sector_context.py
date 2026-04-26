@@ -1,7 +1,10 @@
-"""
-Sector Context Agent
-Tracks RBI policy changes, industry headwinds, and macroeconomic conditions.
-"""
+# =============================================================================
+# CREDENT — Sector Context Agent (RBI Policy & Macro Analysis)
+# A product of Asenra | https://asenra.in
+# Copyright (c) 2026 Asenra. All rights reserved.
+# Unauthorized use, reproduction, or distribution is strictly prohibited.
+# =============================================================================
+
 
 
 class SectorContextAgent:

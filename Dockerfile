@@ -1,3 +1,9 @@
+# =============================================================================
+# CREDENT — Dockerfile
+# A product of Asenra | https://asenra.in
+# Copyright (c) 2026 Asenra. All rights reserved.
+# =============================================================================
+
 # USE A STABLE PYTHON BASE IMAGE
 FROM python:3.11-slim
 

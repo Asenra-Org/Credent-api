@@ -1,7 +1,9 @@
-"""
-IntelliAssess — AI-Powered Credit Appraisal & Risk Assessment Platform
-Main application entry point.
-"""
+# =============================================================================
+# CREDENT — AI-Powered Credit Appraisal & Risk Assessment Platform
+# A product of Asenra | https://asenra.in
+# Copyright (c) 2026 Asenra. All rights reserved.
+# Unauthorized use, reproduction, or distribution is strictly prohibited.
+# =============================================================================
 
 import os
 from fastapi import FastAPI, Request
@@ -12,13 +14,13 @@ from dotenv import load_dotenv
 # LOAD ENVIRONMENT VARIABLES FIRST!
 load_dotenv()
 
-# Import our new API routers AFTER loading the .env
+# Import API routers AFTER loading the .env
 from app.routes import documents, analysis, research, reports, history
 
 app = FastAPI(
-    title="IntelliAssess API",
-    description="AI-Powered Credit Appraisal & Risk Assessment Platform",
-    version="0.1.0",
+    title="Credent API",
+    description="AI-Powered Credit Appraisal & Risk Assessment Platform by Asenra",
+    version="1.0.0",
 )
 
 # CORS — allow frontend origins
@@ -49,20 +51,20 @@ async def global_exception_handler(request: Request, exc: Exception):
 # ---- Health & Status Endpoints ----
 @app.get("/")
 async def root():
-    return {"message": "IntelliAssess API is running 🚀"}
+    return {"message": "Credent API is running 🚀 | Powered by Asenra"}
 
 
 @app.get("/health")
 async def health_check():
     """Health check with environment validation."""
     issues = []
-    
+
     if not os.getenv("GROQ_API_KEY"):
         issues.append("GROQ_API_KEY not set — AI features will use fallbacks")
-    
+
     if not os.path.exists("temp_uploads"):
         issues.append("temp_uploads directory missing")
-    
+
     return {
         "status": "healthy" if not issues else "degraded",
         "issues": issues if issues else None
