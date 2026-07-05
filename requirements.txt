@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # =============================================================================
 # CREDENT — Python Dependencies
 # A product of Asenra | https://asenra.in
@@ -39,3 +40,65 @@ pytest-asyncio==0.25.0
 
 # DATABASE
 supabase==2.11.0
+=======
+## Requirements
+
+- Python 3.8+
+- NLTK (see `requirements.txt`)
+
+## Setup
+
+```bash
+python -m venv venv
+source venv/bin/activate      # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+## Usage
+
+Run the demo script:
+
+```bash
+python text_processing.py
+```
+
+Use it in your own code:
+
+```python
+from text_processing import extract_keywords
+
+text = "The account was flagged as NPA after restructuring and remained overdue."
+matches = extract_keywords(text)
+print(matches)
+# ['npa', 'overdue', 'restructuring']
+```
+
+Or with a custom keyword list:
+
+```python
+from text_processing import CreditKeywordMatcher
+
+matcher = CreditKeywordMatcher(keywords={"fraud", "embezzlement"})
+print(matcher.extract_keywords("Investigation revealed fraud in the account."))
+```
+
+## Running Tests
+
+```bash
+python -m unittest test_text_processing.py -v
+```
+
+## Keyword List
+
+The default high-risk keyword list (`CREDIT_RISK_KEYWORDS` in
+`text_processing.py`) includes terms such as: default, restructuring, npa,
+overdue, delinquent, write-off, bankruptcy, insolvency, liquidation,
+moratorium, and more. This list can be extended or replaced by passing a
+custom `keywords` set to `CreditKeywordMatcher`.
+
+## Acceptance Criteria
+
+- ✅ Extraction script returns a list of matched keywords found in raw text.
+- ✅ Local processing only (no external API calls).
+- ✅ Error-free on empty, None, or oversized input.
+>>>>>>> 8b3a8ef (Add Credit Keyword Matcher: main.py, text_processing.py, tests, and docs)
