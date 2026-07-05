@@ -1,9 +1,3 @@
-# =============================================================================
-# CREDENT — Python Dependencies
-# A product of Asenra | https://asenra.in
-# Copyright (c) 2026 Asenra. All rights reserved.
-# Unauthorized use, reproduction, or distribution is strictly prohibited.
-# =============================================================================
 
 # CORE API
 fastapi==0.115.6
