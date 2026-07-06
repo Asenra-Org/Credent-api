@@ -169,23 +169,25 @@ def normalize_to_inr(value):
     return normalized
 
 # UPGRADED SCHEMA: Focus on hard financials to prevent "Tone-based" hallucinations
+from typing import Optional
+from pydantic import BaseModel, Field
+
 class RiskExtraction(BaseModel):
     company_name: str = Field(description="The name of the company applying for credit")
     sector: str = Field(description="The industry sector (e.g., Manufacturing, Fintech) inferred from the text")
     
     # NEW: Quantifiable Credit Data (Crucial to prevent ESG-only approvals)
-    total_revenue: Optional[Any] = Field(None, description="Annual revenue (turnover)")
-    total_debt: Optional[Any] = Field(None, description="Total short/long term borrowings")
-    shareholder_equity: Optional[Any] = Field(None, description="Net worth / Share capital + reserves")
-    current_assets: Optional[Any] = Field(None, description="Total current assets")
-    current_liabilities: Optional[Any] = Field(None, description="Total current liabilities")
+    total_revenue: Optional[any] = Field(None, description="Annual revenue (turnover)")
+    total_debt: Optional[float] = Field(None, description="Total short/long term borrowings")
+    shareholder_equity: Optional[any] = Field(None, description="Net worth / Share capital + reserves")
+    current_assets: Optional[float] = Field(None, description="Total current assets")
+    current_liabilities: Optional[float] = Field(None, description="Total current liabilities")
     
     base_score: int = Field(description="An estimated starting credit score (0-100)")
     qualitative_notes: str = Field(description="Summary of operational capacity or CIBIL/GSTR notes")
     financial_commitments: List[str] = Field(description="Existing loans, guarantees, or credit lines")
     legal_risks: List[str] = Field(description="Ongoing litigation, defaults, or notices")
     sanction_details: List[str] = Field(description="Details of limits sanctioned by other banks")
-
 # Default fallback when all extraction fails
 DEFAULT_EXTRACTION = {
     "company_name": "Unknown Entity",
@@ -429,8 +431,22 @@ class DocumentIngestionAgent:
             - EPFO/ESIC defaults
 
             CRITICAL: Focus on HARD FINANCIAL DATA. 
-            - Identify P&L items: total_revenue, total_debt.
-            - Identify Balance Sheet items: shareholder_equity, total assets/liabilities.
+            - Extract the balance sheet value:
+            - total_revenue
+             -total_debt
+             -shareholder_equity
+             -current_assets
+             -current_liabilities
+
+            Rules:
+
+            - Return all financial values as numeric floats.
+             -Remove commas and currency symbols.
+             -Convert crore/lakh values to INR.
+             -If a value is missing,return null.
+             -Do not return "N/A","-", or empty string.
+             
+              Identify Balance Sheet items: shareholder_equity, total assets/liabilities.
             - UNIT CONVERSION (MANDATORY): Return financial values as FOUND (e.g. '62 Cr', '120000000').
               * 1 Crore = 10,000,000
               * If document says "62 Crores", you MUST return "620000000" OR "62 Cr".
