@@ -178,10 +178,10 @@ class RiskExtraction(BaseModel):
     
     # NEW: Quantifiable Credit Data (Crucial to prevent ESG-only approvals)
     total_revenue: Optional[any] = Field(None, description="Annual revenue (turnover)")
-    total_debt: Optional[float] = Field(None, description="Total short/long term borrowings")
+    total_debt: Optional[any] = Field(None, description="Total short/long term borrowings")
     shareholder_equity: Optional[any] = Field(None, description="Net worth / Share capital + reserves")
-    current_assets: Optional[float] = Field(None, description="Total current assets")
-    current_liabilities: Optional[float] = Field(None, description="Total current liabilities")
+    current_assets: Optional[any] = Field(None, description="Total current assets")
+    current_liabilities: Optional[any] = Field(None, description="Total current liabilities")
     
     base_score: int = Field(description="An estimated starting credit score (0-100)")
     qualitative_notes: str = Field(description="Summary of operational capacity or CIBIL/GSTR notes")
