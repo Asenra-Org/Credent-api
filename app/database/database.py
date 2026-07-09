@@ -38,7 +38,16 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('CREATE TABLE IF NOT EXISTS companies (id TEXT PRIMARY KEY, name TEXT, sector TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
-    cursor.execute('CREATE TABLE IF NOT EXISTS appraisal_records (id TEXT PRIMARY KEY, company_id TEXT, revenue REAL, debt REAL, base_score INTEGER, adjusted_score INTEGER, decision TEXT, recommended_loan_amount TEXT, recommended_interest_rate TEXT, decision_rationale TEXT, raw_document_data TEXT, integrity_flags TEXT, web_research TEXT, cam_report TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+    cursor.execute('CREATE TABLE IF NOT EXISTS appraisal_records (id TEXT PRIMARY KEY, company_id TEXT, revenue REAL, debt REAL, base_score INTEGER, adjusted_score INTEGER, decision TEXT, recommended_loan_amount TEXT, recommended_interest_rate TEXT, decision_rationale TEXT, raw_document_data TEXT, integrity_flags TEXT, web_research TEXT, cam_report TEXT, financial_ratios TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+    
+    # Safe backward-compatible migration for existing local databases
+    try:
+        cursor.execute('ALTER TABLE appraisal_records ADD COLUMN financial_ratios TEXT')
+    except sqlite3.OperationalError as e:
+        # Ignore duplicate column errors, but raise any true operational failures
+        if "duplicate column name" not in str(e).lower():
+            raise e
+            
     conn.commit()
     conn.close()
     
@@ -85,7 +94,8 @@ def save_appraisal(data):
         "cam_report": data.get("cam_report", {}),
         "web_research": data.get("web_research", {}),
         "integrity_flags": data.get("integrity_flags", {}),
-        "raw_document_data": data.get("raw_document_data", {})
+        "raw_document_data": data.get("raw_document_data", {}),
+        "financial_ratios": data.get("financial_ratios", {})
     }
 
     # 1. ATTEMPT SUPABASE SAVE
@@ -101,7 +111,7 @@ def save_appraisal(data):
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute('INSERT OR REPLACE INTO companies (id, name, sector) VALUES (?, ?, ?)', (data.get("company_id"), data.get("company_name"), data.get("sector")))
-        cursor.execute('''INSERT INTO appraisal_records (id, company_id, revenue, debt, base_score, adjusted_score, decision, recommended_loan_amount, recommended_interest_rate, decision_rationale, raw_document_data, integrity_flags, web_research, cam_report) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (record_id, data.get("company_id"), data.get("revenue"), data.get("debt"), data.get("base_score"), data.get("adjusted_score"), data.get("decision"), data.get("recommended_loan_amount"), data.get("recommended_interest_rate"), data.get("decision_rationale"), json.dumps(data.get("raw_document_data")), json.dumps(data.get("integrity_flags")), json.dumps(data.get("web_research")), json.dumps(data.get("cam_report"))))
+        cursor.execute('''INSERT INTO appraisal_records (id, company_id, revenue, debt, base_score, adjusted_score, decision, recommended_loan_amount, recommended_interest_rate, decision_rationale, raw_document_data, integrity_flags, web_research, cam_report, financial_ratios) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (record_id, data.get("company_id"), data.get("revenue"), data.get("debt"), data.get("base_score"), data.get("adjusted_score"), data.get("decision"), data.get("recommended_loan_amount"), data.get("recommended_interest_rate"), data.get("decision_rationale"), json.dumps(data.get("raw_document_data")), json.dumps(data.get("integrity_flags")), json.dumps(data.get("web_research")), json.dumps(data.get("cam_report")), json.dumps(data.get("financial_ratios", {}))))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -130,7 +140,8 @@ def get_recent_appraisals(limit=10):
                     "recommended_interest_rate": item["recommended_interest_rate"],
                     "created_at": item["created_at"],
                     "cam_report": item["cam_report"],
-                    "web_research": item["web_research"]
+                    "web_research": item["web_research"],
+                    "financial_ratios": item.get("financial_ratios", {})
                 })
             return records
         except Exception as e:
@@ -144,8 +155,13 @@ def get_recent_appraisals(limit=10):
     results = []
     for row in cursor.fetchall():
         record = dict(zip(columns, row))
-        for field in ["raw_document_data", "integrity_flags", "web_research", "cam_report"]:
+        for field in ["raw_document_data", "integrity_flags", "web_research", "cam_report", "financial_ratios"]:
             if record.get(field): record[field] = json.loads(record[field])
+        
+        if "sector" not in record:
+            raw_data = record.get("raw_document_data") or {}
+            record["sector"] = raw_data.get("sector", "N/A")
+            
         results.append(record)
     conn.close()
     return results
