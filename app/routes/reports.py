@@ -37,6 +37,7 @@ class CAMRequest(BaseModel):
     extracted_pdf_data: Dict[str, Any] = Field(default_factory=dict)
     integrity_flags: Dict[str, Any] = Field(default_factory=lambda: {"flags_detected": 0, "flags": []})
     web_research: Dict[str, Any] = Field(default_factory=lambda: {"company_news": [], "sector_headwinds": [], "litigation_signals": []})
+    financial_ratios: Dict[str, Any] = Field(default_factory=dict)
     final_score: float = 0
 
 class StatusUpdate(BaseModel):
@@ -148,7 +149,8 @@ async def generate_credit_appraisal_memo(raw_request: Request):
                     "raw_document_data": request.extracted_pdf_data,
                     "integrity_flags": request.integrity_flags,
                     "web_research": request.web_research,
-                    "cam_report": results
+                    "cam_report": results,
+                    "financial_ratios": request.financial_ratios or {}
                 })
             except Exception as save_err:
                 print(f"[WARN] Failed to save appraisal to Cloud: {save_err}")
