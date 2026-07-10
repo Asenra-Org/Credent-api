@@ -43,6 +43,20 @@ def run_seed():
             "company_name": "TechFlow Innovators Pvt Ltd",
             "summary": "Highly favorable credit profile with strong recurring revenue.",
             "risk_factors": ["High dependency on key engineering talent."]
+        },
+        "management_score": 85.5,
+        "promoter_analysis": [
+            {
+                "name": "Arjun Malhotra",
+                "experience_years": 15,
+                "risk_flags": [],
+                "verdict": "Clean record, high credibility"
+            }
+        ],
+        "governance_assessment": {
+            "board_independence": "Good",
+            "regulatory_compliance": "Fully Compliant",
+            "risk_level": "Low"
         }
     }
 
@@ -75,6 +89,20 @@ def run_seed():
             "company_name": "Globex Retail Solutions",
             "summary": "High-risk profile. Solvency is questionable in the near term.",
             "risk_factors": ["High debt burden", "Pending litigation", "Revenue mismatch"]
+        },
+        "management_score": 38.0,
+        "promoter_analysis": [
+            {
+                "name": "Vijay Shah",
+                "experience_years": 6,
+                "risk_flags": ["PREVIOUS_DEFAULT: Promoter was director of defaulted entity Shah Plastics Ltd"],
+                "verdict": "High risk flag detected"
+            }
+        ],
+        "governance_assessment": {
+            "board_independence": "Poor",
+            "regulatory_compliance": "Non-compliant (late filings)",
+            "risk_level": "High"
         }
     }
 
@@ -107,6 +135,20 @@ def run_seed():
             "company_name": "Acme Manufacturing Corp",
             "summary": "Stable, mature business with reliable, asset-backed debt.",
             "risk_factors": ["Supply chain vulnerabilities to raw material costs."]
+        },
+        "management_score": 75.0,
+        "promoter_analysis": [
+            {
+                "name": "Ramesh Patel",
+                "experience_years": 22,
+                "risk_flags": [],
+                "verdict": "Experienced promoter, clear track record"
+            }
+        ],
+        "governance_assessment": {
+            "board_independence": "Adequate",
+            "regulatory_compliance": "Fully Compliant",
+            "risk_level": "Low"
         }
     }
 
@@ -139,6 +181,20 @@ def run_seed():
             "company_name": "Zenith Logistics",
             "summary": "Growing company but highly leveraged. Needs closer inspection of cash flow cycles.",
             "risk_factors": ["High operational costs", "Fuel price volatility"]
+        },
+        "management_score": 62.5,
+        "promoter_analysis": [
+            {
+                "name": "Sanjay Verma",
+                "experience_years": 10,
+                "risk_flags": ["MINOR_DISPUTE: Ongoing civil dispute related to personal property"],
+                "verdict": "Adequate track record, minor personal dispute"
+            }
+        ],
+        "governance_assessment": {
+            "board_independence": "Adequate",
+            "regulatory_compliance": "Fully Compliant",
+            "risk_level": "Medium"
         }
     }
 
@@ -171,6 +227,20 @@ def run_seed():
             "company_name": "Horizon Healthcare Partners",
             "summary": "Prime borrower. Excellent liquidity and highly favorable market position.",
             "risk_factors": ["Regulatory changes in healthcare sector."]
+        },
+        "management_score": 92.0,
+        "promoter_analysis": [
+            {
+                "name": "Dr. Sunita Sharma",
+                "experience_years": 25,
+                "risk_flags": [],
+                "verdict": "Highly respected medical professional and entrepreneur"
+            }
+        ],
+        "governance_assessment": {
+            "board_independence": "Excellent",
+            "regulatory_compliance": "Fully Compliant",
+            "risk_level": "Low"
         }
     }
 
