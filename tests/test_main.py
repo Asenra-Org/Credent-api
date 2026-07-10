@@ -63,3 +63,66 @@ def test_sector_context_endpoint(client):
     assert "growth_rate_projected" in data
     assert "rbi_policy_impact" in data
 
+
+def test_save_and_fetch_promoter_appraisal():
+    """
+    Test that save_appraisal correctly persists promoter results and governance scores,
+    and get_recent_appraisals correctly retrieves them.
+    """
+    from app.database.database import save_appraisal, get_recent_appraisals
+    
+    test_data = {
+        "company_id": "CMP_TEST_DB",
+        "company_name": "Database Test Corp",
+        "sector": "Technology",
+        "revenue": "10.0 Cr",
+        "debt": "2.0 Cr",
+        "base_score": 700,
+        "adjusted_score": 750,
+        "decision": "APPROVE",
+        "recommended_loan_amount": "3.0 Cr",
+        "recommended_interest_rate": "10.0%",
+        "decision_rationale": "Solid metrics.",
+        "raw_document_data": {"company_name": "Database Test Corp"},
+        "integrity_flags": {"fraud_detected": False},
+        "web_research": {"sentiment": "Neutral"},
+        "cam_report": {"summary": "Strong growth profile"},
+        
+        # New database columns
+        "management_score": 88.5,
+        "promoter_analysis": [
+            {
+                "name": "Jane Smith",
+                "experience_years": 14,
+                "risk_flags": [],
+                "verdict": "Clear record"
+            }
+        ],
+        "governance_assessment": {
+            "board_independence": "Good",
+            "regulatory_compliance": "Fully Compliant",
+            "risk_level": "Low"
+        }
+    }
+    
+    # Save the appraisal
+    record_id = save_appraisal(test_data)
+    assert record_id is not None
+    
+    # Fetch recent appraisals
+    recent = get_recent_appraisals(limit=5)
+    
+    # Find our saved record
+    target_record = None
+    for r in recent:
+        if r.get("company_name") == "Database Test Corp":
+            target_record = r
+            break
+            
+    assert target_record is not None
+    assert target_record["management_score"] == 88.5
+    assert len(target_record["promoter_analysis"]) == 1
+    assert target_record["promoter_analysis"][0]["name"] == "Jane Smith"
+    assert target_record["governance_assessment"]["board_independence"] == "Good"
+
+

@@ -41,13 +41,37 @@ def init_db():
     cursor.execute('CREATE TABLE IF NOT EXISTS appraisal_records (id TEXT PRIMARY KEY, company_id TEXT, revenue REAL, debt REAL, base_score INTEGER, adjusted_score INTEGER, decision TEXT, recommended_loan_amount TEXT, recommended_interest_rate TEXT, decision_rationale TEXT, raw_document_data TEXT, integrity_flags TEXT, web_research TEXT, cam_report TEXT, financial_ratios TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
     
     # Safe backward-compatible migration for existing local databases
-    try:
-        cursor.execute('ALTER TABLE appraisal_records ADD COLUMN financial_ratios TEXT')
-    except sqlite3.OperationalError as e:
-        # Ignore duplicate column errors, but raise any true operational failures
-        if "duplicate column name" not in str(e).lower():
-            raise e
-            
+    cursor.execute('PRAGMA table_info(appraisal_records)')
+    columns = [col[1] for col in cursor.fetchall()]
+    
+    if 'financial_ratios' not in columns:
+        try:
+            cursor.execute('ALTER TABLE appraisal_records ADD COLUMN financial_ratios TEXT')
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise e
+                
+    if 'management_score' not in columns:
+        try:
+            cursor.execute('ALTER TABLE appraisal_records ADD COLUMN management_score REAL DEFAULT 0.0')
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise e
+                
+    if 'promoter_analysis' not in columns:
+        try:
+            cursor.execute('ALTER TABLE appraisal_records ADD COLUMN promoter_analysis TEXT DEFAULT "[]"')
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise e
+                
+    if 'governance_assessment' not in columns:
+        try:
+            cursor.execute('ALTER TABLE appraisal_records ADD COLUMN governance_assessment TEXT DEFAULT "{}"')
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise e
+        
     conn.commit()
     conn.close()
     
@@ -95,7 +119,12 @@ def save_appraisal(data):
         "web_research": data.get("web_research", {}),
         "integrity_flags": data.get("integrity_flags", {}),
         "raw_document_data": data.get("raw_document_data", {}),
-        "financial_ratios": data.get("financial_ratios", {})
+        "financial_ratios": data.get("financial_ratios", {}),
+        
+        # New fields for promoter governance
+        "management_score": _safe_float(data.get("management_score", 0.0)),
+        "promoter_analysis": data.get("promoter_analysis") or [],
+        "governance_assessment": data.get("governance_assessment") or {}
     }
 
     # 1. ATTEMPT SUPABASE SAVE
@@ -111,7 +140,7 @@ def save_appraisal(data):
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute('INSERT OR REPLACE INTO companies (id, name, sector) VALUES (?, ?, ?)', (data.get("company_id"), data.get("company_name"), data.get("sector")))
-        cursor.execute('''INSERT INTO appraisal_records (id, company_id, revenue, debt, base_score, adjusted_score, decision, recommended_loan_amount, recommended_interest_rate, decision_rationale, raw_document_data, integrity_flags, web_research, cam_report, financial_ratios) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (record_id, data.get("company_id"), data.get("revenue"), data.get("debt"), data.get("base_score"), data.get("adjusted_score"), data.get("decision"), data.get("recommended_loan_amount"), data.get("recommended_interest_rate"), data.get("decision_rationale"), json.dumps(data.get("raw_document_data")), json.dumps(data.get("integrity_flags")), json.dumps(data.get("web_research")), json.dumps(data.get("cam_report")), json.dumps(data.get("financial_ratios", {}))))
+        cursor.execute('''INSERT INTO appraisal_records (id, company_id, revenue, debt, base_score, adjusted_score, decision, recommended_loan_amount, recommended_interest_rate, decision_rationale, raw_document_data, integrity_flags, web_research, cam_report, financial_ratios, management_score, promoter_analysis, governance_assessment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (record_id, data.get("company_id"), data.get("revenue"), data.get("debt"), data.get("base_score"), data.get("adjusted_score"), data.get("decision"), data.get("recommended_loan_amount"), data.get("recommended_interest_rate"), data.get("decision_rationale"), json.dumps(data.get("raw_document_data")), json.dumps(data.get("integrity_flags")), json.dumps(data.get("web_research")), json.dumps(data.get("cam_report")), json.dumps(payload["financial_ratios"]), payload["management_score"], json.dumps(payload["promoter_analysis"]), json.dumps(payload["governance_assessment"])))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -141,7 +170,10 @@ def get_recent_appraisals(limit=10):
                     "created_at": item["created_at"],
                     "cam_report": item["cam_report"],
                     "web_research": item["web_research"],
-                    "financial_ratios": item.get("financial_ratios", {})
+                    "financial_ratios": item.get("financial_ratios", {}),
+                    "management_score": item.get("management_score", 0.0),
+                    "promoter_analysis": item.get("promoter_analysis", []),
+                    "governance_assessment": item.get("governance_assessment", {})
                 })
             return records
         except Exception as e:
@@ -155,7 +187,7 @@ def get_recent_appraisals(limit=10):
     results = []
     for row in cursor.fetchall():
         record = dict(zip(columns, row))
-        for field in ["raw_document_data", "integrity_flags", "web_research", "cam_report", "financial_ratios"]:
+        for field in ["raw_document_data", "integrity_flags", "web_research", "cam_report", "financial_ratios", "promoter_analysis", "governance_assessment"]:
             if record.get(field): record[field] = json.loads(record[field])
         
         if "sector" not in record:
