@@ -172,10 +172,27 @@ class TestManagementQualityCurrentState:
             await management_agent.analyze({"company_name": "Test Co"})
 
     @pytest.mark.asyncio
-    async def test_check_promoter_history_currently_raises_not_implemented(self, management_agent):
-        """Documents that check_promoter_history() is still a stub."""
-        with pytest.raises(NotImplementedError):
-            await management_agent.check_promoter_history(["promoter_1"])
+    async def test_check_promoter_history_implemented(self, management_agent):
+        """Tests that check_promoter_history parses valid LLM response correctly."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import json
+
+        mock_response = MagicMock()
+        mock_response.content = json.dumps({
+            "director_cibil_scores": [750],
+            "past_defaults": False,
+            "regulatory_actions": [],
+            "past_ventures": ["Company A"],
+            "warnings": []
+        })
+
+        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as mock_ainvoke:
+            mock_ainvoke.return_value = mock_response
+            result = await management_agent.check_promoter_history(["promoter_1"])
+
+        assert result["past_defaults"] is False
+        assert 750 in result["director_cibil_scores"]
+        assert "Company A" in result["past_ventures"]
 
 
 @pytest.mark.skip(reason="Blocked: ManagementQualityAgent.analyze() has no scoring logic yet (ASE-22)")

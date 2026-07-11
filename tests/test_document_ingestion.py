@@ -16,68 +16,13 @@ file, or any network connection.  We test only the pure preprocessing logic by
 calling the helpers directly on controlled string inputs.
 """
 import pytest
-import sys
-import types
 import os
-
-# ---------------------------------------------------------------------------
-# Lightweight stubs for production dependencies not installed in the test env.
-#
-# document_ingestion.py imports these at module level:
-#   tabula, PyPDF2, langchain_groq, langchain_core, pydantic
-#
-# We insert minimal fake modules into sys.modules BEFORE importing our code
-# so Python's import machinery is satisfied without needing the real packages.
-# This is a standard pattern for unit-testing modules with heavy I/O deps.
-# ---------------------------------------------------------------------------
-
-def _stub_module(name: str, **attrs) -> types.ModuleType:
-    """Create and register a minimal stub module."""
-    mod = types.ModuleType(name)
-    for attr, val in attrs.items():
-        setattr(mod, attr, val)
-    sys.modules[name] = mod
-    return mod
-
-# tabula — only `read_pdf` is used at runtime (not at import time).
-_stub_module("tabula", read_pdf=lambda *a, **kw: [])
-
-# PyPDF2 — PdfReader is instantiated inside methods, not at import time.
-class _FakePdfReader:
-    def __init__(self, *a, **kw):
-        self.pages = []
-
-_stub_module("PyPDF2", PdfReader=_FakePdfReader)
-
-# langchain_groq — ChatGroq is instantiated in __init__; stub it.
-class _FakeChatGroq:
-    def __init__(self, *a, **kw):
-        pass
-    def with_structured_output(self, *a, **kw):
-        return None
-
-_stub_module("langchain_groq", ChatGroq=_FakeChatGroq)
-
-# langchain_core.prompts — ChatPromptTemplate used in parse_financial_statement.
-_lc_prompts = _stub_module("langchain_core.prompts")
-class _FakeChatPromptTemplate:
-    @staticmethod
-    def from_messages(*a, **kw):
-        return _FakeChatPromptTemplate()
-_lc_prompts.ChatPromptTemplate = _FakeChatPromptTemplate
-_stub_module("langchain_core")
-
-# pydantic — BaseModel and Field used by RiskExtraction schema.
-class _FakeBaseModel:
-    pass
-
-_stub_module("pydantic", BaseModel=_FakeBaseModel, Field=lambda *a, **kw: None)
 
 # Set a dummy API key so DocumentIngestionAgent.__init__ doesn't warn.
 os.environ.setdefault("GROQ_API_KEY", "test-dummy-key-does-not-make-network-calls")
 
 # ---------------------------------------------------------------------------
-# NOW import the module under test — all stubs are in place.
+# NOW import the module under test
 # ---------------------------------------------------------------------------
 from app.agents.input.document_ingestion import (  # noqa: E402
     _remove_duplicate_headers,
