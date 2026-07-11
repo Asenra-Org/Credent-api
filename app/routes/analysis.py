@@ -432,6 +432,7 @@ async def get_management_quality(company_name: str = "Asenra Corp"):
             risk_level="Low"
         )
     )
+<<<<<<< HEAD
 
 
 @router.get("/sector-context", response_model=SectorContextResponse)
@@ -453,5 +454,47 @@ async def get_sector_context(sector: str = "Manufacturing"):
 
     return SectorContextResponse(
         status="success",
+<<<<<<< HEAD
         **result
     )
+=======
+        sector=sector,
+        outlook="Positive",
+        growth_rate_projected="7.2%",
+        risk_level="Medium",
+        risk_factors=[
+            "Raw material price inflation",
+            "Global logistics challenges"
+        ],
+        rbi_policy_impact=[
+            RbiPolicyDetail(
+                circular_ref="RBI/2026-27/45",
+                summary="Refinancing and interest subvention guidelines for MSME manufacturers.",
+                impact="Favorable"
+            )
+        ]
+    )
+=======
+@router.get("/sector-context", response_model=SectorContextResponse)
+async def get_sector_context(sector: str = "Manufacturing"):
+    """Analyze sector-level macroeconomic factors and relevant RBI circulars."""
+
+    if sector_agent is None:
+        return {
+            "status": "error",
+            "sector": sector,
+            "outlook": "Unavailable",
+            "growth_rate_projected": "N/A",
+            "risk_level": "Unknown",
+            "risk_factors": [],
+            "rbi_policy_impact": []
+        }
+
+    result = await sector_agent.get_sector_outlook(sector)
+
+    return SectorContextResponse(
+        status="success",
+        **result
+    )
+>>>>>>> 1ab8788 (ASE-25: Wire SectorContextAgent to sector-context endpoint)
+>>>>>>> e2f82ba (ASE-25: Wire SectorContextAgent to sector-context endpoint)
