@@ -1,8 +1,7 @@
 # =============================================================================
 # CREDENT — Management Quality Agent (Promoter & Governance Analysis)
-# A product of Asenra | https://asenra.in
+# A product of Asenra
 # Copyright (c) 2026 Asenra. All rights reserved.
-# Unauthorized use, reproduction, or distribution is strictly prohibited.
 # =============================================================================
 
 import json
@@ -29,60 +28,7 @@ class ManagementQualityAgent:
 
     async def analyze(self, entity_data: dict) -> dict:
         """Run management quality assessment."""
-
-        prompt = ChatPromptTemplate.from_messages([
-            (
-                "system",
-                """
-                You are a Senior Indian Credit Risk Officer.
-
-                Analyze the promoter's background and company governance
-                from the provided raw text.
-
-                Extract:
-                - Promoter score
-                - Director CIBIL scores
-                - Past defaults
-                - Governance issues
-                - Regulatory actions
-
-                Return only valid JSON in this format:
-
-                {{
-                    "promoter_score": 0,
-                    "director_cibil_scores": [],
-                    "past_defaults": false,
-                    "governance_issues": [],
-                    "regulatory_actions": [],
-                    "warnings": []
-                }}
-
-                If information is unavailable, return empty lists or null.
-
-                If any past default is found, add a clear warning to
-                the warnings list.
-                """,
-            ),
-            ("user", "{text}"),
-        ])
-
-        chain = prompt | self.llm
-
-        result = await chain.ainvoke({
-            "text": str(entity_data)
-        })
-
-        try:
-            return json.loads(result.content)
-        except (json.JSONDecodeError, TypeError):
-            return {
-                "promoter_score": None,
-                "director_cibil_scores": [],
-                "past_defaults": False,
-                "governance_issues": [],
-                "regulatory_actions": [],
-                "warnings": ["Unable to parse management analysis response."],
-            }
+        raise NotImplementedError
 
     async def check_promoter_history(
         self,
