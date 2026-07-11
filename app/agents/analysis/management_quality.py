@@ -6,8 +6,12 @@
 
 import json
 import os
+import re
+import logging
 
 from langchain_groq import ChatGroq
+
+logger = logging.getLogger(__name__)
 
 
 class ManagementQualityAgent:
@@ -17,7 +21,7 @@ class ManagementQualityAgent:
         api_key = os.getenv("GROQ_API_KEY")
 
         if not api_key:
-            print("[WARN] GROQ_API_KEY not set.")
+            logger.warning("GROQ_API_KEY not set. Falling back to dummy key.")
 
         self.llm = ChatGroq(
             model="llama-3.1-8b-instant",
@@ -34,6 +38,25 @@ class ManagementQualityAgent:
         promoter_ids: list[str],
     ) -> dict:
         """Check promoter past ventures, defaults, and regulatory actions."""
+        # Sanitize promoter inputs to prevent prompt injection
+        sanitized_promoters = []
+        for pid in promoter_ids:
+            if not isinstance(pid, str):
+                continue
+            # Retain only safe alphanumeric, space, comma, hyphens, and dots.
+            clean_pid = re.sub(r"[^\w\s,\-\.]", "", pid).strip()
+            if clean_pid:
+                # Truncate to prevent buffer overflow/token spending injection attacks
+                sanitized_promoters.append(clean_pid[:100])
+
+        if not sanitized_promoters:
+            return {
+                "director_cibil_scores": [],
+                "past_defaults": False,
+                "regulatory_actions": [],
+                "past_ventures": [],
+                "warnings": ["No valid promoter IDs provided for verification."],
+            }
 
         prompt = f"""
         You are a Senior Indian Credit Risk Officer.
@@ -63,48 +86,51 @@ class ManagementQualityAgent:
         If information is unavailable, return empty lists or null.
 
         Promoters:
-        {promoter_ids}
+        {sanitized_promoters}
         """
-
-        if not hasattr(self.llm, "ainvoke"):
-            return {
-                "director_cibil_scores": [],
-                "past_defaults": False,
-                "regulatory_actions": [],
-                "past_ventures": [],
-                "warnings": ["Unable to parse promoter history response."],
-            }
 
         try:
             result = await self.llm.ainvoke(prompt)
-        except ModuleNotFoundError:
+        except Exception as e:
+            logger.error(f"Error invoking Groq LLM: {e}", exc_info=True)
             return {
                 "director_cibil_scores": [],
                 "past_defaults": False,
                 "regulatory_actions": [],
                 "past_ventures": [],
-                "warnings": ["Unable to parse promoter history response."],
+                "warnings": ["Unable to parse promoter history response due to service outage."],
             }
 
         try:
             content = result.content if hasattr(result, "content") else result
+            content = content.strip()
+
+            # Extract JSON block from markdown ```json ``` wrapper if present
+            markdown_match = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
+            if markdown_match:
+                content = markdown_match.group(1).strip()
+            else:
+                # Extract first JSON-like dictionary block { ... } if no markdown wrapper
+                curly_match = re.search(r"(\{.*\})", content, re.DOTALL)
+                if curly_match:
+                    content = curly_match.group(1).strip()
+
             promoter_history = json.loads(content)
-        except (json.JSONDecodeError, TypeError):
+        except (json.JSONDecodeError, TypeError) as parse_err:
+            logger.error(f"Failed to parse LLM response JSON: {parse_err}", exc_info=True)
             return {
                 "director_cibil_scores": [],
                 "past_defaults": False,
                 "regulatory_actions": [],
                 "past_ventures": [],
-                "warnings": ["Unable to parse promoter history response."],
+                "warnings": ["Unable to parse promoter history response due to formatting issue."],
             }
 
         if promoter_history.get("past_defaults"):
             warning = "Past default found in promoter history."
-
-            print(f"[WARN] {warning}")
+            logger.warning(warning)
 
             warnings = promoter_history.setdefault("warnings", [])
-
             if warning not in warnings:
                 warnings.append(warning)
 
