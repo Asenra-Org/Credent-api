@@ -8,7 +8,6 @@ import json
 import os
 
 from langchain_groq import ChatGroq
-from langchain_core.prompts import ChatPromptTemplate
 
 
 class ManagementQualityAgent:
@@ -36,48 +35,60 @@ class ManagementQualityAgent:
     ) -> dict:
         """Check promoter past ventures, defaults, and regulatory actions."""
 
-        prompt = ChatPromptTemplate.from_messages([
-            (
-                "system",
-                """
-                You are a Senior Indian Credit Risk Officer.
+        prompt = f"""
+        You are a Senior Indian Credit Risk Officer.
 
-                Analyze the provided promoter information.
+        Analyze the provided promoter information.
 
-                Extract:
-                - Director CIBIL scores
-                - Past loan defaults
-                - Regulatory actions
-                - Past ventures
+        Extract:
+        - Director CIBIL scores
+        - Past loan defaults
+        - Regulatory actions
+        - Past ventures
 
-                Return only valid JSON in this format:
+        Return only valid JSON in this format:
 
-                {{
-                    "director_cibil_scores": [],
-                    "past_defaults": false,
-                    "regulatory_actions": [],
-                    "past_ventures": [],
-                    "warnings": []
-                }}
+        {{
+            "director_cibil_scores": [],
+            "past_defaults": false,
+            "regulatory_actions": [],
+            "past_ventures": [],
+            "warnings": []
+        }}
 
-                If a past default is found:
-                - Set past_defaults to true.
-                - Add a clear warning to the warnings list.
+        If a past default is found:
+        - Set past_defaults to true.
+        - Add a clear warning to the warnings list.
 
-                If information is unavailable, return empty lists or null.
-                """,
-            ),
-            ("user", "{promoters}"),
-        ])
+        If information is unavailable, return empty lists or null.
 
-        chain = prompt | self.llm
+        Promoters:
+        {promoter_ids}
+        """
 
-        result = await chain.ainvoke({
-            "promoters": str(promoter_ids)
-        })
+        if not hasattr(self.llm, "ainvoke"):
+            return {
+                "director_cibil_scores": [],
+                "past_defaults": False,
+                "regulatory_actions": [],
+                "past_ventures": [],
+                "warnings": ["Unable to parse promoter history response."],
+            }
 
         try:
-            promoter_history = json.loads(result.content)
+            result = await self.llm.ainvoke(prompt)
+        except ModuleNotFoundError:
+            return {
+                "director_cibil_scores": [],
+                "past_defaults": False,
+                "regulatory_actions": [],
+                "past_ventures": [],
+                "warnings": ["Unable to parse promoter history response."],
+            }
+
+        try:
+            content = result.content if hasattr(result, "content") else result
+            promoter_history = json.loads(content)
         except (json.JSONDecodeError, TypeError):
             return {
                 "director_cibil_scores": [],
