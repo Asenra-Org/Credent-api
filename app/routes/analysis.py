@@ -5,6 +5,7 @@
 # Unauthorized use, reproduction, or distribution is strictly prohibited.
 # =============================================================================
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 from app.agents.analysis.integrity_verification import IntegrityVerificationAgent
@@ -139,12 +140,13 @@ async def check_data_integrity(raw_request: Request):
         
     except Exception as e:
         print(f"[ROUTE /integrity-check] Error: {e}")
-        return {
-            "status": "completed",
-            "flags_detected": 0,
-            "flags": [],
-            "warning": f"Integrity check encountered an error: {str(e)}"
-        }
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "error",
+                "message": f"Integrity check encountered an error: {str(e)}"
+            }
+        )
 
 
 @router.get("/financial-health", response_model=FinancialHealthResponse)
