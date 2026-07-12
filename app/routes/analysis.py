@@ -4,7 +4,7 @@
 # Copyright (c) 2026 Asenra. All rights reserved.
 # Unauthorized use, reproduction, or distribution is strictly prohibited.
 # =============================================================================
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
@@ -51,10 +51,10 @@ class IntegrityCheckRequest(BaseModel):
 # --- Response Models ---
 
 class RatioMetrics(BaseModel):
-    current_ratio: float = Field(..., description="Current assets divided by current liabilities")
-    debt_to_equity: float = Field(..., description="Total debt divided by total equity")
-    quick_ratio: float = Field(..., description="Quick assets divided by current liabilities")
-    interest_coverage_ratio: float = Field(..., description="Earnings before interest and tax divided by interest expense")
+    current_ratio: Optional[float] = Field(None, description="Current assets divided by current liabilities")
+    debt_to_equity: Optional[float] = Field(None, description="Total debt divided by total equity")
+    quick_ratio: Optional[float] = Field(None, description="Quick assets divided by current liabilities")
+    interest_coverage_ratio: Optional[float] = Field(None, description="Earnings before interest and tax divided by interest expense")
 
 class CashFlowMetrics(BaseModel):
     status: str = Field(..., description="Overall cash flow health (e.g., Stable, Strong, Weak)")
@@ -152,56 +152,59 @@ async def check_data_integrity(raw_request: Request):
 @router.get("/financial-health", response_model=FinancialHealthResponse)
 async def get_financial_health(company_name: str = "Asenra Corp"):
     """Evaluate financial health, cash flows, and balance sheet metrics for a company."""
-    # Mock data to be replaced with FinancialHealthAgent when integrated
+    if financial_agent is None:
+        raise HTTPException(status_code=503, detail="Financial health service not available.")
+        
+    data = await financial_agent.analyze({"company_name": company_name})
+    
+    ratios = data.get("ratios", {})
+    cash_flow = data.get("cash_flow_assessment", {})
+    
+    # TODO(API-v2): Semantic Mismatch Fix Required
+    # The agent calculates 'dscr' (Net Operating Income / Debt Service).
+    # The API contract expects 'interest_coverage_ratio' (EBIT / Interest Expense).
+    # We are mapping DSCR to interest_coverage_ratio here strictly for backward compatibility.
+    
     return FinancialHealthResponse(
-        status="success",
-        company_name=company_name,
-        financial_health_score=85.0,
-        risk_level="Low",
+        status=data.get("status", "error"),
+        company_name=data.get("company_name", company_name),
+        financial_health_score=data.get("financial_health_score", 0.0),
+        risk_level=data.get("risk_level", "Undetermined"),
         ratios=RatioMetrics(
-            current_ratio=1.85,
-            debt_to_equity=1.20,
-            quick_ratio=1.45,
-            interest_coverage_ratio=4.50
+            current_ratio=ratios.get("current_ratio"),
+            debt_to_equity=ratios.get("debt_to_equity"),
+            quick_ratio=ratios.get("quick_ratio"),
+            interest_coverage_ratio=ratios.get("dscr")  # Temporary legacy mapping
         ),
         cash_flow_assessment=CashFlowMetrics(
-            status="Strong",
-            operating_cash_flow=15000000.0,
-            free_cash_flow=8000000.0,
-            trend="Positive"
+            status=cash_flow.get("status", "Undetermined"),
+            operating_cash_flow=cash_flow.get("operating_cash_flow", 0.0),
+            free_cash_flow=cash_flow.get("free_cash_flow", 0.0),
+            trend=cash_flow.get("trend", "Undetermined")
         ),
-        recommendation="Recommended for credit approval with standard interest terms."
+        recommendation=data.get("recommendation", "Analysis incomplete.")
     )
 
 
 @router.get("/management-quality", response_model=ManagementQualityResponse)
 async def get_management_quality(company_name: str = "Asenra Corp"):
     """Assess promoter profiles, corporate governance, and management track record."""
-    # Mock data to be replaced with ManagementQualityAgent when integrated
+    if management_agent is None:
+        raise HTTPException(status_code=503, detail="Management quality service not available.")
+        
+    data = await management_agent.analyze({"company_name": company_name})
+    
     return ManagementQualityResponse(
-        status="success",
-        company_name=company_name,
-        management_score=78.5,
-        risk_level="Low",
-        promoter_analysis=[
-            PromoterDetail(
-                name="Aditya Sen",
-                experience_years=18,
-                risk_flags=[],
-                verdict="Clean background check, experienced leader"
-            ),
-            PromoterDetail(
-                name="Rajesh Rao",
-                experience_years=12,
-                risk_flags=[],
-                verdict="No defaults detected, strong industry credentials"
-            )
-        ],
-        governance_assessment=GovernanceMetrics(
-            board_independence="Good",
-            regulatory_compliance="Fully Compliant",
-            risk_level="Low"
-        )
+        status=data.get("status", "error"),
+        company_name=data.get("company_name", company_name),
+        management_score=data.get("management_score", 0.0),
+        risk_level=data.get("risk_level", "Undetermined"),
+        promoter_analysis=data.get("promoter_analysis", []),
+        governance_assessment=data.get("governance_assessment", {
+            "board_independence": "Undetermined",
+            "regulatory_compliance": "Undetermined",
+            "risk_level": "Undetermined"
+        })
     )
 
 

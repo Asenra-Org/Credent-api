@@ -184,10 +184,10 @@ class RiskExtraction(BaseModel):
     current_liabilities: Optional[float] = Field(None, description="Total current liabilities")
     
     base_score: int = Field(description="An estimated starting credit score (0-100)")
-    qualitative_notes: str = Field(description="Summary of operational capacity or CIBIL/GSTR notes")
-    financial_commitments: List[str] = Field(description="Existing loans, guarantees, or credit lines")
-    legal_risks: List[str] = Field(description="Ongoing litigation, defaults, or notices")
-    sanction_details: List[str] = Field(description="Details of limits sanctioned by other banks")
+    qualitative_notes: Optional[str] = Field(None, description="Summary of operational capacity or CIBIL/GSTR notes")
+    financial_commitments: List[str] = Field(default_factory=list, description="Existing loans, guarantees, or credit lines")
+    legal_risks: List[str] = Field(default_factory=list, description="Ongoing litigation, defaults, or notices")
+    sanction_details: List[str] = Field(default_factory=list, description="Details of limits sanctioned by other banks")
 # Default fallback when all extraction fails
 DEFAULT_EXTRACTION = {
     "company_name": "Unknown Entity",

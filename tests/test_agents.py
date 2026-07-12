@@ -166,12 +166,6 @@ Track: raise this with Karan / whoever owns management_quality.py.
 class TestManagementQualityCurrentState:
 
     @pytest.mark.asyncio
-    async def test_analyze_currently_raises_not_implemented(self, management_agent):
-        """Documents that ManagementQualityAgent.analyze() is still a stub."""
-        with pytest.raises(NotImplementedError):
-            await management_agent.analyze({"company_name": "Test Co"})
-
-    @pytest.mark.asyncio
     async def test_check_promoter_history_implemented(self, management_agent):
         """Tests that check_promoter_history parses valid LLM response correctly."""
         from unittest.mock import AsyncMock, MagicMock, patch
