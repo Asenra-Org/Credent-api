@@ -12,7 +12,6 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from typing import List
 
-
 # Default fallback responses — used only if every AI attempt fails
 DEFAULT_SECTOR_OUTLOOK = {
     "outlook": "Stable",
@@ -48,7 +47,6 @@ class RbiPolicyItem(BaseModel):
 
 class RbiPolicyList(BaseModel):
     policies: List[RbiPolicyItem] = Field(default_factory=list, description="Relevant RBI circulars for the sector")
-
 
 
 class SectorContextAgent:
@@ -93,9 +91,7 @@ class SectorContextAgent:
             return "Medium"
         return "High"
 
-
     async def get_sector_outlook(self, sector: str) -> dict:
-
         """Get current macroeconomic outlook and risk rating for a given sector."""
 
         if not sector or not sector.strip():
