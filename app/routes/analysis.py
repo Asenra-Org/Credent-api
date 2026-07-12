@@ -211,22 +211,23 @@ async def get_management_quality(company_name: str = "Asenra Corp"):
 @router.get("/sector-context", response_model=SectorContextResponse)
 async def get_sector_context(sector: str = "Manufacturing"):
     """Analyze sector-level macroeconomic factors and relevant RBI circulars."""
-    # Mock data to be replaced with SectorContextAgent when integrated
+
+    if sector_agent is None:
+        return {
+            "status": "error",
+            "sector": sector,
+            "outlook": "Unavailable",
+            "growth_rate_projected": "N/A",
+            "risk_level": "Unknown",
+            "risk_factors": [],
+            "rbi_policy_impact": []
+        }
+
+    result = await sector_agent.get_sector_outlook(sector)
+    rbi = await sector_agent.check_rbi_policies(sector)
+
     return SectorContextResponse(
         status="success",
-        sector=sector,
-        outlook="Positive",
-        growth_rate_projected="7.2%",
-        risk_level="Medium",
-        risk_factors=[
-            "Raw material price inflation",
-            "Global logistics challenges"
-        ],
-        rbi_policy_impact=[
-            RbiPolicyDetail(
-                circular_ref="RBI/2026-27/45",
-                summary="Refinancing and interest subvention guidelines for MSME manufacturers.",
-                impact="Favorable"
-            )
-        ]
-    )
+        **result,
+        rbi_policy_impact=rbi
+    )
