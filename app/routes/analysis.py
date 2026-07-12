@@ -6,6 +6,7 @@
 # Unauthorized use, reproduction, or distribution is strictly prohibited.
 # =============================================================================
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 from app.agents.analysis.integrity_verification import IntegrityVerificationAgent
@@ -114,10 +115,10 @@ async def check_data_integrity(raw_request: Request):
     """Cross-validate GST returns against Bank Statements to detect fraud."""
     try:
         body = await raw_request.json()
-        
+
         # Parse request with defaults
         request = IntegrityCheckRequest(**body)
-        
+
         if integrity_agent is None:
             return {
                 "status": "completed",
@@ -125,7 +126,7 @@ async def check_data_integrity(raw_request: Request):
                 "flags": [],
                 "warning": "Integrity verification service not available."
             }
-        
+
         # Validate we have data to work with
         if not request.gst_data and not request.bank_data:
             return {
@@ -134,19 +135,23 @@ async def check_data_integrity(raw_request: Request):
                 "flags": [],
                 "warning": "No GST or bank data provided."
             }
-        
-        results = await integrity_agent.cross_validate(request.gst_data, request.bank_data)
+
+        results = await integrity_agent.cross_validate(
+            request.gst_data,
+            request.bank_data
+        )
         return results
-        
+
     except Exception as e:
         print(f"[ROUTE /integrity-check] Error: {e}")
-        return {
-            "status": "completed",
-            "flags_detected": 0,
-            "flags": [],
-            "warning": f"Integrity check encountered an error: {str(e)}"
-        }
 
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "error",
+                "message": f"Integrity check encountered an error: {str(e)}"
+            }
+        )
 
 @router.get("/financial-health", response_model=FinancialHealthResponse)
 async def get_financial_health(company_name: str = "Asenra Corp"):
@@ -202,8 +207,6 @@ async def get_management_quality(company_name: str = "Asenra Corp"):
             risk_level="Low"
         )
     )
-
-
 @router.get("/sector-context", response_model=SectorContextResponse)
 async def get_sector_context(sector: str = "Manufacturing"):
     """Analyze sector-level macroeconomic factors and relevant RBI circulars."""
@@ -220,8 +223,10 @@ async def get_sector_context(sector: str = "Manufacturing"):
         }
 
     result = await sector_agent.get_sector_outlook(sector)
+    rbi = await sector_agent.check_rbi_policies(sector)
 
     return SectorContextResponse(
         status="success",
-        **result
+        **result,
+        rbi_policy_impact=rbi
     )
