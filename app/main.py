@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import API routers AFTER loading the .env
-from app.routes import documents, analysis, research, reports, history
+from app.routes import documents, analysis, research, reports, history, structured_data
 
 app = FastAPI(
     title="Credent API",
@@ -77,3 +77,4 @@ app.include_router(analysis.router, prefix="/api/v1/analysis", tags=["Analysis"]
 app.include_router(research.router, prefix="/api/v1/research", tags=["Research & Insights"])
 app.include_router(reports.router, prefix="/api/v1/reports", tags=["Reports"])
 app.include_router(history.router, prefix="/api/v1/history", tags=["History"])
+app.include_router(structured_data.router, prefix="/api/v1/data", tags=["Structured Data"])
