@@ -93,9 +93,9 @@ class ManagementQualityResponse(BaseModel):
 
 
 class RbiPolicyDetail(BaseModel):
-    circular_ref: str = Field(..., description="Reference number of the RBI circular")
+    circular_ref: str = Field(..., description="Reference number of RBI circular")
     summary: str = Field(..., description="Key highlight or summary of the circular")
-    impact: str = Field(..., description="Impact on the borrower's business (e.g., Favorable, Neutral, Unfavorable)")
+    impact: str = Field(..., description="Impact on the sector: Favorable, Neutral, or Unfavorable")
 
 class SectorContextResponse(BaseModel):
     status: str = Field("success", description="Response status")
@@ -104,7 +104,7 @@ class SectorContextResponse(BaseModel):
     growth_rate_projected: str = Field(..., description="Projected annual growth rate of the sector")
     risk_level: str = Field(..., description="Macro/sectoral risk level")
     risk_factors: List[str] = Field(..., description="Key headwinds or risks affecting the sector")
-    rbi_policy_impact: List[RbiPolicyDetail] = Field(..., description="Applicable RBI policies and circulars and their impact")
+    rbi_policy_impact: List[RbiPolicyDetail] = Field(..., description="Applicable RBI circulars and their impact on the sector")
 
 
 # --- Endpoint Handlers ---
@@ -114,10 +114,10 @@ async def check_data_integrity(raw_request: Request):
     """Cross-validate GST returns against Bank Statements to detect fraud."""
     try:
         body = await raw_request.json()
-        
+
         # Parse request with defaults
         request = IntegrityCheckRequest(**body)
-        
+
         if integrity_agent is None:
             return {
                 "status": "completed",
@@ -125,7 +125,7 @@ async def check_data_integrity(raw_request: Request):
                 "flags": [],
                 "warning": "Integrity verification service not available."
             }
-        
+
         # Validate we have data to work with
         if not request.gst_data and not request.bank_data:
             return {
@@ -134,10 +134,10 @@ async def check_data_integrity(raw_request: Request):
                 "flags": [],
                 "warning": "No GST or bank data provided."
             }
-        
+
         results = await integrity_agent.cross_validate(request.gst_data, request.bank_data)
         return results
-        
+
     except Exception as e:
         print(f"[ROUTE /integrity-check] Error: {e}")
         return JSONResponse(
@@ -154,17 +154,17 @@ async def get_financial_health(company_name: str = "Asenra Corp"):
     """Evaluate financial health, cash flows, and balance sheet metrics for a company."""
     if financial_agent is None:
         raise HTTPException(status_code=503, detail="Financial health service not available.")
-        
+
     data = await financial_agent.analyze({"company_name": company_name})
-    
+
     ratios = data.get("ratios", {})
     cash_flow = data.get("cash_flow_assessment", {})
-    
+
     # TODO(API-v2): Semantic Mismatch Fix Required
     # The agent calculates 'dscr' (Net Operating Income / Debt Service).
     # The API contract expects 'interest_coverage_ratio' (EBIT / Interest Expense).
     # We are mapping DSCR to interest_coverage_ratio here strictly for backward compatibility.
-    
+
     return FinancialHealthResponse(
         status=data.get("status", "error"),
         company_name=data.get("company_name", company_name),
@@ -191,9 +191,9 @@ async def get_management_quality(company_name: str = "Asenra Corp"):
     """Assess promoter profiles, corporate governance, and management track record."""
     if management_agent is None:
         raise HTTPException(status_code=503, detail="Management quality service not available.")
-        
+
     data = await management_agent.analyze({"company_name": company_name})
-    
+
     return ManagementQualityResponse(
         status=data.get("status", "error"),
         company_name=data.get("company_name", company_name),
@@ -210,8 +210,12 @@ async def get_management_quality(company_name: str = "Asenra Corp"):
 
 @router.get("/sector-context", response_model=SectorContextResponse)
 async def get_sector_context(sector: str = "Manufacturing"):
-    """Analyze sector-level macroeconomic factors and relevant RBI circulars."""
+    """Analyze sector-level macroeconomic factors and RBI regulatory context.
 
+    Sector-level only: this endpoint does not accept or evaluate borrower
+    raw text. Individual borrower compliance checks are handled by other
+    agents (per mentor guidance).
+    """
     if sector_agent is None:
         return {
             "status": "error",

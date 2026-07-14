@@ -7,30 +7,37 @@
 import os
 import json
 import re
+from typing import Any, Callable, List, Optional
+
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
-from typing import List
 
-# Default fallback responses — used only if every AI attempt fails
+# -----------------------------------------------------------------------------
+# Deterministic fallback data — used only if every AI attempt fails.
+# Kept as plain dicts (not model instances) so callers get the same shape
+# regardless of which tier of the fallback chain produced the response.
+# -----------------------------------------------------------------------------
 DEFAULT_SECTOR_OUTLOOK = {
     "outlook": "Stable",
     "growth_rate_projected": "Unavailable",
     "risk_score": 5,
     "risk_level": "Medium",
-    "risk_factors": ["Unable to retrieve sector data. Manual research recommended."]
+    "risk_factors": ["Unable to retrieve sector data. Manual research recommended."],
 }
 
 DEFAULT_RBI_POLICIES = [
     {
         "circular_ref": "N/A",
-        "summary": "Unable to retrieve RBI circular data. Manual research recommended.",
-        "impact": "Neutral"
+        "summary": "Unable to retrieve RBI circular information.",
+        "impact": "Unknown",
     }
 ]
 
+_VALID_OUTLOOKS = {"Positive", "Stable", "Negative"}
 
-# --- Output schemas (used for structured LLM output) ---
+
+# --- Output schemas (used for structured LLM output) ------------------------
 
 class SectorOutlookReport(BaseModel):
     outlook: str = Field(description="Overall sector outlook: Positive, Stable, or Negative")
@@ -39,18 +46,24 @@ class SectorOutlookReport(BaseModel):
     risk_factors: List[str] = Field(default_factory=list, description="Key headwinds or macro risks currently facing this sector")
 
 
-class RbiPolicyItem(BaseModel):
-    circular_ref: str = Field(description="Reference number of the RBI circular, e.g. 'RBI/2026-27/45'")
-    summary: str = Field(description="Key highlight or summary of the circular")
-    impact: str = Field(description="Impact on the borrower's business: Favorable, Neutral, or Unfavorable")
-
-
 class RbiPolicyList(BaseModel):
-    policies: List[RbiPolicyItem] = Field(default_factory=list, description="Relevant RBI circulars for the sector")
+    """Sector-level circular listing schema — this agent only ever needs
+    this shape; there is no borrower-specific compliance checking here.
+    """
+    policies: List[dict] = Field(default_factory=list, description="Relevant RBI circulars for the sector")
 
 
 class SectorContextAgent:
-    """Provides sector-level context and macro-economic insights."""
+    """Provides sector-level context and macro-economic insights.
+
+    Every AI-backed method in this class follows the same three-tier
+    fallback chain (see _run_with_fallback):
+        1. Structured LLM output (pydantic-validated).
+        2. Raw LLM output, JSON-parsed manually.
+        3. Deterministic default data.
+    This guarantees callers always get a well-shaped response, even if the
+    LLM provider is unavailable or returns malformed output.
+    """
 
     def __init__(self):
         api_key = os.getenv("GROQ_API_KEY")
@@ -60,27 +73,30 @@ class SectorContextAgent:
         self.llm = ChatGroq(
             model="llama-3.1-8b-instant",
             temperature=0,
-            api_key=api_key or "dummy"
+            api_key=api_key or "dummy",
         )
 
-        try:
-            self.structured_llm_outlook = self.llm.with_structured_output(SectorOutlookReport, method="json_mode")
-        except Exception as e:
-            print(f"[WARN] Structured output init failed (outlook): {e}")
-            self.structured_llm_outlook = None
+        self.structured_llm_outlook = self._build_structured_llm(SectorOutlookReport, "outlook")
+        self.structured_llm_rbi_legacy = self._build_structured_llm(RbiPolicyList, "rbi-legacy")
 
+    def _build_structured_llm(self, schema: type[BaseModel], label: str):
+        """Wrap with_structured_output() init in a try/except so a schema
+        binding failure at startup degrades to the raw-JSON fallback tier
+        instead of crashing the whole agent.
+        """
         try:
-            self.structured_llm_rbi = self.llm.with_structured_output(RbiPolicyList, method="json_mode")
+            return self.llm.with_structured_output(schema, method="json_mode")
         except Exception as e:
-            print(f"[WARN] Structured output init failed (rbi): {e}")
-            self.structured_llm_rbi = None
+            print(f"[WARN] Structured output init failed ({label}): {e}")
+            return None
 
-    def _extract_json_from_text(self, text: str) -> dict:
-        """Try to extract JSON from raw LLM text response."""
-        json_match = re.search(r'\{[\s\S]*\}', text)
-        if json_match:
-            return json.loads(json_match.group())
-        raise ValueError("No JSON found in response")
+    @staticmethod
+    def _extract_json_from_text(text: str) -> dict:
+        """Best-effort extraction of a JSON object from raw LLM text output."""
+        json_match = re.search(r"\{[\s\S]*\}", text)
+        if not json_match:
+            raise ValueError("No JSON found in response")
+        return json.loads(json_match.group())
 
     @staticmethod
     def _risk_level_from_score(score: int) -> str:
@@ -91,14 +107,100 @@ class SectorContextAgent:
             return "Medium"
         return "High"
 
+    async def _run_with_fallback(
+        self,
+        *,
+        prompt: ChatPromptTemplate,
+        invoke_params: dict,
+        structured_llm,
+        validate: Callable[[dict], Optional[Any]],
+        default: Any,
+        log_prefix: str,
+    ):
+        """Shared three-tier fallback chain used by every AI-backed method.
+
+        Args:
+            prompt: The chat prompt to send.
+            invoke_params: Variables to fill into the prompt template.
+            structured_llm: A with_structured_output()-wrapped LLM, or None
+                if binding failed at init.
+            validate: Takes a raw dict (from either tier 1 or tier 2) and
+                returns a cleaned/validated result, or None if the response
+                is unusable and the next tier should be tried.
+            default: Deterministic value to return if both AI tiers fail.
+            log_prefix: Short tag used in warning logs, e.g. "[SECTOR]".
+
+        Returns:
+            A validated result from tier 1 or 2, or a deep copy of `default`.
+        """
+        # Tier 1: structured output, already schema-validated by pydantic.
+        if structured_llm:
+            try:
+                chain = prompt | structured_llm
+                result = await chain.ainvoke(invoke_params)
+                validated = validate(result.model_dump())
+                if validated is not None:
+                    return validated
+            except Exception as e:
+                print(f"{log_prefix} Structured output failed: {e}")
+
+        # Tier 2: raw text output, manually parsed and validated.
+        try:
+            chain = prompt | self.llm
+            raw_result = await chain.ainvoke(invoke_params)
+            raw_text = raw_result.content if hasattr(raw_result, "content") else str(raw_result)
+            parsed = self._extract_json_from_text(raw_text)
+            validated = validate(parsed)
+            if validated is not None:
+                return validated
+        except Exception as e:
+            print(f"{log_prefix} Raw fallback failed: {e}")
+
+        # Tier 3: deterministic default.
+        print(f"{log_prefix} All AI methods failed. Returning default.")
+        return json.loads(json.dumps(default))  # cheap deep copy, dict or list
+
+    # -- Sector outlook -------------------------------------------------------
+
+    @staticmethod
+    def _validate_sector_outlook(data: dict) -> Optional[dict]:
+        """Coerce and sanity-check a sector outlook response.
+
+        Clamps risk_score into 1-10, derives risk_level from it, defaults
+        outlook to 'Stable' if the model returns something off-schema, and
+        ensures risk_factors is always a list of strings. Returns None only
+        if the payload isn't a dict at all, signalling the caller to fall
+        through to the next tier.
+        """
+        if not isinstance(data, dict):
+            return None
+
+        outlook = data.get("outlook")
+        if outlook not in _VALID_OUTLOOKS:
+            outlook = "Stable"
+
+        try:
+            risk_score = max(1, min(10, int(data.get("risk_score", 5))))
+        except (ValueError, TypeError):
+            risk_score = 5
+
+        risk_factors = data.get("risk_factors", [])
+        if not isinstance(risk_factors, list):
+            risk_factors = [str(risk_factors)]
+
+        return {
+            "outlook": outlook,
+            "growth_rate_projected": str(data.get("growth_rate_projected", "Unavailable")),
+            "risk_score": risk_score,
+            "risk_level": SectorContextAgent._risk_level_from_score(risk_score),
+            "risk_factors": risk_factors,
+        }
+
     async def get_sector_outlook(self, sector: str) -> dict:
         """Get current macroeconomic outlook and risk rating for a given sector."""
-
         if not sector or not sector.strip():
             print("[SECTOR] No sector provided, returning defaults.")
-            result = DEFAULT_SECTOR_OUTLOOK.copy()
-            result["sector"] = "Unknown Sector"
-            return result
+            return {**DEFAULT_SECTOR_OUTLOOK, "sector": "Unknown Sector"}
 
         sector = sector.strip()
 
@@ -112,77 +214,85 @@ class SectorContextAgent:
             Assign a macro risk score from 1 (very low risk, stable/growing sector) to 10
             (very high risk, sector in severe distress or highly volatile).
 
-            You MUST output ONLY valid JSON that EXACTLY matches this schema:
+            Return ONLY valid JSON. No markdown, no commentary, no code fences.
+            Schema:
             {{
                 "outlook": "Positive" | "Stable" | "Negative",
                 "growth_rate_projected": "e.g. 7.2%",
                 "risk_score": <int 1-10>,
                 "risk_factors": ["list of strings", "specific headwinds"]
             }}"""),
-            ("user", "Sector: {sector}")
+            ("user", "Sector: {sector}"),
         ])
 
-        invoke_params = {"sector": sector}
-
-        # Attempt 1: Structured output
-        if self.structured_llm_outlook:
-            try:
-                chain = prompt | self.structured_llm_outlook
-                result = await chain.ainvoke(invoke_params)
-                output = result.model_dump()
-                output["risk_score"] = max(1, min(10, int(output.get("risk_score", 5))))
-                output["risk_level"] = self._risk_level_from_score(output["risk_score"])
-                output["sector"] = sector
-                return output
-            except Exception as e:
-                print(f"[SECTOR] Structured output failed: {e}")
-
-        # Attempt 2: Raw LLM + JSON parse
-        try:
-            chain = prompt | self.llm
-            raw_result = await chain.ainvoke(invoke_params)
-            raw_text = raw_result.content if hasattr(raw_result, 'content') else str(raw_result)
-            parsed = self._extract_json_from_text(raw_text)
-
-            for key, default_val in DEFAULT_SECTOR_OUTLOOK.items():
-                parsed.setdefault(key, default_val)
-
-            try:
-                parsed["risk_score"] = max(1, min(10, int(parsed["risk_score"])))
-            except (ValueError, TypeError):
-                parsed["risk_score"] = 5
-
-            parsed["risk_level"] = self._risk_level_from_score(parsed["risk_score"])
-            if not isinstance(parsed.get("risk_factors"), list):
-                parsed["risk_factors"] = [str(parsed.get("risk_factors", ""))]
-            parsed["sector"] = sector
-            return parsed
-        except Exception as e2:
-            print(f"[SECTOR] Raw fallback failed: {e2}")
-
-        # Attempt 3: Return safe defaults
-        print("[SECTOR] All AI methods failed. Returning default outlook.")
-        result = DEFAULT_SECTOR_OUTLOOK.copy()
+        result = await self._run_with_fallback(
+            prompt=prompt,
+            invoke_params={"sector": sector},
+            structured_llm=self.structured_llm_outlook,
+            validate=self._validate_sector_outlook,
+            default=DEFAULT_SECTOR_OUTLOOK,
+            log_prefix="[SECTOR]",
+        )
         result["sector"] = sector
         return result
 
-    async def check_rbi_policies(self, sector: str) -> list[dict]:
-        """Check relevant RBI circulars and policy changes affecting a given sector."""
+    # -- RBI policy compliance --------------------------------------------------
 
+    @staticmethod
+    def _validate_legacy_policies(data: dict) -> Optional[list]:
+        """Validate the sector-level circular-listing response."""
+        if not isinstance(data, dict):
+            return None
+        policies = data.get("policies")
+        if not isinstance(policies, list) or not policies:
+            return None
+        return policies
+
+    async def check_rbi_policies(self, sector: str) -> list:
+        """Retrieve sector-level RBI circulars and regulatory guidance
+        relevant to the specified industry sector.
+
+        This agent evaluates sector-level regulatory context only. It does
+        not check any borrower-specific raw text for compliance — that is
+        handled elsewhere in the system.
+
+        Args:
+            sector: The industry sector to check (e.g. 'Manufacturing').
+
+        Returns:
+            A list of dicts, each with circular_ref, summary, and impact.
+        """
         if not sector or not sector.strip():
             print("[SECTOR] No sector provided for RBI check, returning defaults.")
             return DEFAULT_RBI_POLICIES.copy()
 
-        sector = sector.strip()
+        return await self._list_sector_circulars(sector.strip())
 
+    async def _list_sector_circulars(self, sector: str) -> list:
+        """Given a sector, return plausible, realistic RBI circulars,
+        prudential norms, sector exposure guidelines, and lending
+        regulations relevant to lenders assessing borrowers in that sector.
+
+        This is a sector-level lookup only — no borrower-specific
+        compliance checks are performed here.
+        """
         prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a regulatory compliance analyst specializing in RBI (Reserve Bank
-            of India) circulars affecting Indian lending and industry sectors. Given a sector, list
-            plausible, realistic RBI circulars or policy directions relevant to lenders assessing
-            borrowers in that sector (refinancing schemes, priority sector lending norms, sector-specific
-            exposure limits, etc.).
+            of India) circulars, prudential norms, and sector exposure guidelines affecting Indian
+            lending institutions.
 
-            You MUST output ONLY valid JSON that EXACTLY matches this schema:
+            Given a sector, list plausible, realistic RBI circulars and lending regulations relevant
+            to lenders assessing borrowers in that sector. Cover things like:
+            - relevant RBI circulars
+            - prudential norms (provisioning, capital adequacy, asset classification)
+            - sector-specific exposure limits and guidelines
+            - other lending regulations relevant to the sector
+
+            Do NOT perform any borrower-specific compliance checks — this is a sector-level lookup
+            only, not an evaluation of any individual borrower's documents or disclosures.
+
+            Return ONLY valid JSON. No markdown, no commentary, no code fences.
+            Schema:
             {{
                 "policies": [
                     {{
@@ -192,34 +302,14 @@ class SectorContextAgent:
                     }}
                 ]
             }}"""),
-            ("user", "Sector: {sector}")
+            ("user", "Sector: {sector}"),
         ])
 
-        invoke_params = {"sector": sector}
-
-        # Attempt 1: Structured output
-        if self.structured_llm_rbi:
-            try:
-                chain = prompt | self.structured_llm_rbi
-                result = await chain.ainvoke(invoke_params)
-                policies = result.model_dump().get("policies", [])
-                return policies if policies else DEFAULT_RBI_POLICIES.copy()
-            except Exception as e:
-                print(f"[SECTOR] Structured RBI output failed: {e}")
-
-        # Attempt 2: Raw LLM + JSON parse
-        try:
-            chain = prompt | self.llm
-            raw_result = await chain.ainvoke(invoke_params)
-            raw_text = raw_result.content if hasattr(raw_result, 'content') else str(raw_result)
-            parsed = self._extract_json_from_text(raw_text)
-            policies = parsed.get("policies", [])
-            if not isinstance(policies, list) or not policies:
-                return DEFAULT_RBI_POLICIES.copy()
-            return policies
-        except Exception as e2:
-            print(f"[SECTOR] Raw RBI fallback failed: {e2}")
-
-        # Attempt 3: Return safe defaults
-        print("[SECTOR] All RBI policy checks failed. Returning defaults.")
-        return DEFAULT_RBI_POLICIES.copy()
+        return await self._run_with_fallback(
+            prompt=prompt,
+            invoke_params={"sector": sector},
+            structured_llm=self.structured_llm_rbi_legacy,
+            validate=self._validate_legacy_policies,
+            default=DEFAULT_RBI_POLICIES,
+            log_prefix="[SECTOR]",
+        )
