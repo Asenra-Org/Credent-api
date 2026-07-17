@@ -4,515 +4,544 @@
 # Copyright (c) 2026 Asenra. All rights reserved.
 # Unauthorized use, reproduction, or distribution is strictly prohibited.
 # =============================================================================
-"""
-FinancialHealthAgent
 
-This agent receives structured financial data about a borrower and performs
-three core tasks:
-    1. Computes key financial ratios (DSCR, Current Ratio, Debt-to-Equity).
-    2. Evaluates whether the company's cash flows are healthy or concerning.
-    3. Aggregates both results into a single, clean analysis response.
+import json
+import os
+import re
+from typing import Optional
 
-The agent is intentionally stateless — it holds no memory between calls.
-Every method receives all the data it needs as a parameter, making the
-agent safe to use concurrently across multiple requests.
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_groq import ChatGroq
+from pydantic import BaseModel, Field
 
-Input shape expected in financial_data:
-    {
-        "current_assets":       float   — e.g. total cash + receivables + inventory
-        "current_liabilities":  float   — e.g. short-term debts + payables due
-        "total_debt":           float   — e.g. all outstanding loans and bonds
-        "total_equity":         float   — e.g. shareholder funds / net worth
-        "net_operating_income": float   — e.g. EBIT (Earnings Before Interest & Tax)
-        "debt_service":         float   — e.g. annual principal + interest repayments
-        "operating_cash_flow":  float   — e.g. net cash from operations this period
-        "free_cash_flow":       float   — e.g. operating cash flow minus capex
-        "historical_inflows":   list[float] — e.g. [monthly/annual cash inflows over N periods]
-        "company_name":         str     — optional, for identification in the response
-    }
-"""
+# ---------------------------------------------------------------------------
+# Financial Health Thresholds
+# ---------------------------------------------------------------------------
 
-import logging
-from typing import Any, Optional
+DSCR_SAFE_THRESHOLD = 1.25
+DSCR_MIN_THRESHOLD = 1.00
 
-logger = logging.getLogger(__name__)
+CURRENT_RATIO_STRONG = 2.0
+CURRENT_RATIO_SAFE = 1.0
+
+DE_RATIO_HIGH_RISK = 2.0
 
 
 # ---------------------------------------------------------------------------
-# Scoring thresholds — sourced from standard credit underwriting norms.
-# All thresholds are declared here (not scattered in logic) so they are
-# easy to audit, adjust, or override in future by the risk team.
+# Structured Extraction Model
 # ---------------------------------------------------------------------------
 
-# DSCR: A value above 1.25 is considered safe. Below 1.0 means the business
-#        cannot service its debt from operating income alone — a red flag.
-DSCR_SAFE_THRESHOLD: float = 1.25
-DSCR_MIN_THRESHOLD: float = 1.0
+class FinancialHealthExtraction(BaseModel):
+    """Extract financial ratios from unstructured reports."""
 
-# Current Ratio: Above 2.0 is excellent liquidity. Below 1.0 means the
-#                company cannot cover short-term obligations.
-CURRENT_RATIO_STRONG: float = 2.0
-CURRENT_RATIO_SAFE: float = 1.0
+    interest_coverage: Optional[float] = Field(
+        default=None,
+        description=(
+            "Interest Coverage Ratio. "
+            "Extract or calculate using EBIT / Interest Expense."
+        ),
+    )
 
-# Debt-to-Equity: Industry varies, but above 2.0 is generally considered
-#                 high leverage. Below 1.0 is conservative and healthy.
-DE_RATIO_HIGH_RISK: float = 2.0
-DE_RATIO_MODERATE: float = 1.0
+    operating_margin: Optional[float] = Field(
+        default=None,
+        description=(
+            "Operating Margin percentage. "
+            "Extract or calculate using Operating Income / Revenue * 100."
+        ),
+    )
 
-# Cash flow trend: If fewer than this fraction of historical periods show
-# positive inflows, the trend is flagged as declining.
-CASH_FLOW_POSITIVE_PERIOD_RATIO: float = 0.7  # 70% of periods must be positive
 
+# ---------------------------------------------------------------------------
+# Financial Health Agent
+# ---------------------------------------------------------------------------
 
 class FinancialHealthAgent:
-    """
-    Analyzes structured financial data to assess the financial health of a borrower.
+    """Analyzes financial health and extracts financial indicators."""
 
-    Methods are all async to align with the project's FastAPI / async architecture,
-    even though these computations are purely CPU-bound. This keeps the interface
-    consistent and allows future I/O (e.g. logging to a database) without refactoring.
-    """
+    def __init__(self):
+        api_key = os.getenv("GROQ_API_KEY")
 
-    def __init__(self) -> None:
-        # No external dependencies at init time. Intentionally lightweight so
-        # the agent can be safely instantiated at module load (see analysis.py).
-        pass
+        self.llm = None
+        self.structured_llm = None
 
-    # -------------------------------------------------------------------------
-    # Private helpers
-    # -------------------------------------------------------------------------
+        if api_key:
+            try:
+                self.llm = ChatGroq(
+                    model="llama-3.1-8b-instant",
+                    temperature=0,
+                    api_key=api_key,
+                )
 
-    def _safe_divide(self, numerator: Any, denominator: Any) -> Optional[float]:
-        """
-        Divide two numbers safely.
+                self.structured_llm = (
+                    self.llm.with_structured_output(
+                        FinancialHealthExtraction
+                    )
+                )
 
-        Returns None if:
-            - Either value is None, not a number, or cannot be converted to float.
-            - The denominator is zero.
+            except Exception as exc:
+                print(
+                    "[WARN] FinancialHealthAgent initialization failed:",
+                    exc,
+                )
 
-        Returning None (instead of 0 or infinity) is intentional — it signals
-        to the caller that the ratio is *undeterminable*, not that it is zero.
-        The calling code can then surface this as 'N/A' to the user.
-        """
+    # -----------------------------------------------------------------------
+    # Helper Functions
+    # -----------------------------------------------------------------------
+
+    def _safe_number(self, value):
         try:
-            n = float(numerator)
-            d = float(denominator)
-        except (TypeError, ValueError):
-            # Non-numeric input — log once and return None gracefully.
-            logger.warning(
-                "FinancialHealthAgent._safe_divide received non-numeric input: "
-                "numerator=%s, denominator=%s", numerator, denominator
-            )
-            return None
-
-        if d == 0.0:
-            # Division by zero — mathematically undefined, treat as unknown.
-            logger.debug(
-                "FinancialHealthAgent._safe_divide: denominator is zero. "
-                "Returning None to avoid ZeroDivisionError."
-            )
-            return None
-
-        return round(n / d, 4)
-
-    def _to_float(self, value: Any) -> float:
-        """
-        Convert a value to float, returning 0.0 on failure.
-
-        Used for values that feed into additive logic (e.g. operating cash flow)
-        where a missing value should be treated as zero — not as unknown.
-        Contrast with _safe_divide which uses None for missing ratio components.
-        """
-        try:
+            if value is None:
+                return None
             return float(value)
         except (TypeError, ValueError):
-            return 0.0
+            return None
 
-    def _classify_dscr(self, dscr: Optional[float]) -> str:
-        """
-        Translate a numeric DSCR into a human-readable risk label.
-        Used to populate the 'risk_level' field in the analysis response.
-        """
+    def _safe_divide(self, numerator, denominator):
+        numerator = self._safe_number(numerator)
+        denominator = self._safe_number(denominator)
+
+        if numerator is None or denominator is None:
+            return None
+
+        if denominator == 0:
+            return None
+
+        return round(numerator / denominator, 4)
+
+    def _classify_dscr(self, dscr):
         if dscr is None:
             return "Undetermined"
+
         if dscr >= DSCR_SAFE_THRESHOLD:
             return "Low"
+
         if dscr >= DSCR_MIN_THRESHOLD:
             return "Medium"
+
         return "High"
 
-    def _compute_overall_score(
-        self,
-        dscr: Optional[float],
-        current_ratio: Optional[float],
-        de_ratio: Optional[float],
-        cash_flow_status: str,
-    ) -> float:
-        """
-        Produce a single 0–100 financial health score by weighting the four
-        key indicators.
+    def _extract_json_from_text(self, text: str) -> dict:
+        """Extract JSON object from raw LLM response."""
+        match = re.search(r"\{[\s\S]*\}", text)
 
-        Weights (must sum to 100):
-            - DSCR:            40 pts  (primary measure of debt repayment capacity)
-            - Current Ratio:   25 pts  (short-term liquidity)
-            - D/E Ratio:       20 pts  (leverage / balance sheet risk)
-            - Cash Flow:       15 pts  (operational quality)
+        if not match:
+            raise ValueError("No JSON found in response")
 
-        Scoring bands are intentionally lenient at the boundaries to avoid
-        cliff-edge results from small rounding differences in inputs.
-        """
-        score: float = 0.0
+        return json.loads(match.group())
 
-        # --- DSCR (40 points) ---
-        if dscr is not None:
-            if dscr >= 2.0:
-                score += 40.0
-            elif dscr >= DSCR_SAFE_THRESHOLD:
-                score += 30.0
-            elif dscr >= DSCR_MIN_THRESHOLD:
-                score += 15.0
-            else:
-                score += 5.0
-
-        # --- Current Ratio (25 points) ---
-        if current_ratio is not None:
-            if current_ratio >= CURRENT_RATIO_STRONG:
-                score += 25.0
-            elif current_ratio >= CURRENT_RATIO_SAFE:
-                score += 15.0
-            else:
-                score += 5.0
-
-        # --- Debt-to-Equity (20 points) — lower D/E is better ---
-        if de_ratio is not None:
-            if de_ratio < DE_RATIO_MODERATE:
-                score += 20.0
-            elif de_ratio < DE_RATIO_HIGH_RISK:
-                score += 12.0
-            else:
-                score += 4.0
-
-        # --- Cash Flow (15 points) ---
-        if cash_flow_status == "Strong":
-            score += 15.0
-        elif cash_flow_status == "Stable":
-            score += 10.0
-        elif cash_flow_status == "Weak":
-            score += 3.0
-        # 'Insufficient Data' contributes 0 points
-
-        return round(score, 2)
-
-    def _build_recommendation(self, score: float, risk_level: str) -> str:
-        """
-        Convert the overall score and risk label into a plain-English
-        lending recommendation that a credit officer can act on immediately.
-        """
-        if score >= 75.0:
-            return (
-                "Financial profile is strong. Recommended for credit approval "
-                "with standard interest terms."
-            )
-        if score >= 55.0:
-            return (
-                f"Borderline financial health (score: {score}). "
-                "Manual review recommended before credit approval. "
-                "Consider collateral or guarantor requirements."
-            )
-        return (
-            f"High financial risk detected (score: {score}, risk level: {risk_level}). "
-            "Credit approval is not recommended without significant risk mitigation."
-        )
-
-    # -------------------------------------------------------------------------
-    # Public interface
-    # -------------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # Financial Ratio Calculations
+    # -----------------------------------------------------------------------
 
     async def compute_ratios(self, financial_data: dict) -> dict:
-        """
-        Compute the three key financial ratios used in credit underwriting:
-            - Debt Service Coverage Ratio (DSCR)
-            - Current Ratio
-            - Debt-to-Equity Ratio
+        financial_data = financial_data or {}
+        notes = []
 
-        Args:
-            financial_data (dict): Structured financial inputs from the borrower's
-                                   documents. Missing keys default to None (not zero)
-                                   so the absence of data is distinguishable from
-                                   a genuine zero value.
-
-        Returns:
-            dict: {
-                "dscr":             float | None,
-                "current_ratio":    float | None,
-                "debt_to_equity":   float | None,
-                "quick_ratio":      float | None,  # bonus ratio, computed if data available
-                "notes":            list[str]       # human-readable warnings for None ratios
-            }
-        """
-        notes: list[str] = []
-
-        # Extract all required fields. We use .get() with None default so we
-        # can distinguish "field missing" from "field present but zero."
-        net_operating_income = financial_data.get("net_operating_income")
-        debt_service         = financial_data.get("debt_service")
-        current_assets       = financial_data.get("current_assets")
-        current_liabilities  = financial_data.get("current_liabilities")
-        total_debt           = financial_data.get("total_debt")
-        total_equity         = financial_data.get("total_equity")
-
-        # ---- 1. Debt Service Coverage Ratio (DSCR) -------------------------
-        # Formula: Net Operating Income / Total Debt Service
-        # A DSCR of 1.0 means the company earns exactly enough to cover debt.
-        # Below 1.0 means it cannot — a lending red flag.
-        dscr = self._safe_divide(net_operating_income, debt_service)
-        if dscr is None:
-            notes.append(
-                "DSCR could not be computed: 'net_operating_income' or "
-                "'debt_service' is missing, zero, or non-numeric."
-            )
-
-        # ---- 2. Current Ratio -----------------------------------------------
-        # Formula: Current Assets / Current Liabilities
-        # Measures ability to meet short-term obligations. A value < 1 means
-        # the company would struggle to pay bills due within 12 months.
-        current_ratio = self._safe_divide(current_assets, current_liabilities)
-        if current_ratio is None:
-            notes.append(
-                "Current Ratio could not be computed: 'current_assets' or "
-                "'current_liabilities' is missing, zero, or non-numeric."
-            )
-
-        # ---- 3. Debt-to-Equity Ratio ----------------------------------------
-        # Formula: Total Debt / Total Equity
-        # Shows how much debt the company uses relative to shareholder funds.
-        # High D/E = high leverage = more risk for the lender.
-        debt_to_equity = self._safe_divide(total_debt, total_equity)
-        if debt_to_equity is None:
-            notes.append(
-                "Debt-to-Equity Ratio could not be computed: 'total_debt' or "
-                "'total_equity' is missing, zero, or non-numeric."
-            )
-
-        # ---- 4. Quick Ratio (bonus, best-effort) ----------------------------
-        # Formula: (Current Assets - Inventory) / Current Liabilities
-        # More conservative than current ratio — excludes illiquid inventory.
-        # We compute this only if inventory data is available; otherwise skip.
-        inventory = financial_data.get("inventory")
-        if inventory is not None and current_assets is not None:
-            liquid_assets = self._to_float(current_assets) - self._to_float(inventory)
-            quick_ratio = self._safe_divide(liquid_assets, current_liabilities)
-        else:
-            # Approximate quick ratio from current ratio if inventory is unknown.
-            # This is a reasonable fallback used by many credit scoring systems.
-            quick_ratio = round(self._to_float(current_ratio) * 0.8, 4) if current_ratio is not None else None
-
-        logger.info(
-            "compute_ratios completed — DSCR: %s, Current: %s, D/E: %s, Quick: %s",
-            dscr, current_ratio, debt_to_equity, quick_ratio
+        net_operating_income = self._safe_number(
+            financial_data.get("net_operating_income")
         )
 
+        debt_service = self._safe_number(
+            financial_data.get("debt_service")
+        )
+
+        current_assets = self._safe_number(
+            financial_data.get("current_assets")
+        )
+
+        current_liabilities = self._safe_number(
+            financial_data.get("current_liabilities")
+        )
+
+        total_debt = self._safe_number(
+            financial_data.get("total_debt")
+        )
+
+        total_equity = self._safe_number(
+            financial_data.get("total_equity")
+        )
+
+        inventory = self._safe_number(
+            financial_data.get("inventory")
+        )
+
+        dscr = self._safe_divide(
+            net_operating_income,
+            debt_service,
+        )
+
+        current_ratio = self._safe_divide(
+            current_assets,
+            current_liabilities,
+        )
+
+        debt_to_equity = self._safe_divide(
+            total_debt,
+            total_equity,
+        )
+
+        if (
+            current_assets is not None
+            and current_liabilities not in (None, 0)
+        ):
+            if inventory is not None:
+                quick_ratio = self._safe_divide(
+                    current_assets - inventory,
+                    current_liabilities,
+                )
+            elif current_ratio is not None:
+                quick_ratio = round(
+                    current_ratio * 0.8,
+                    4,
+                )
+            else:
+                quick_ratio = None
+        else:
+            quick_ratio = None
+
+        # Add warning notes
+        if debt_service == 0:
+            notes.append(
+                "Debt service is zero. DSCR could not be calculated."
+            )
+
+        if current_liabilities == 0:
+            notes.append(
+                "Current liabilities are zero. Current ratio could not be calculated."
+            )
+
+        if total_equity == 0:
+            notes.append(
+                "Total equity is zero. Debt-to-equity ratio could not be calculated."
+            )
+
         return {
-            "dscr":           dscr,
-            "current_ratio":  current_ratio,
+            "dscr": dscr,
+            "current_ratio": current_ratio,
             "debt_to_equity": debt_to_equity,
-            "quick_ratio":    quick_ratio,
-            "notes":          notes,
+            "quick_ratio": quick_ratio,
+            "notes": notes,
         }
 
+    # -----------------------------------------------------------------------
+    # Cash Flow Analysis
+    # -----------------------------------------------------------------------
+
     async def assess_cash_flow(self, financial_data: dict) -> dict:
-        """
-        Evaluate the adequacy and trend of the borrower's cash flows.
+        financial_data = financial_data or {}
+        notes = []
 
-        Two levels of assessment are performed:
-            1. Point-in-time: Is the most recent operating cash flow positive?
-            2. Historical trend: Are the majority of historical inflow periods positive?
+        operating_cash_flow = self._safe_number(
+            financial_data.get("operating_cash_flow")
+        )
 
-        Args:
-            financial_data (dict): Structured financial inputs.
-                Expected keys:
-                    - operating_cash_flow (float): Current period net cash from operations.
-                    - free_cash_flow (float): Operating cash flow minus capital expenditures.
-                    - historical_inflows (list[float]): Cash inflows for each historical
-                      period (e.g., monthly or annual). Used to detect trends.
+        free_cash_flow = self._safe_number(
+            financial_data.get("free_cash_flow")
+        )
 
-        Returns:
-            dict: {
-                "status":               str    — "Strong" | "Stable" | "Weak" | "Insufficient Data"
-                "operating_cash_flow":  float,
-                "free_cash_flow":       float,
-                "trend":                str    — "Positive" | "Stable" | "Declining" | "Insufficient Data"
-                "is_adequate":          bool   — True if cash flows meet minimum adequacy threshold
-                "periods_analyzed":     int    — number of historical periods assessed
-                "notes":                list[str]
-            }
-        """
-        notes: list[str] = []
+        inflows = financial_data.get(
+            "historical_inflows",
+            [],
+        )
 
-        operating_cash_flow = self._to_float(financial_data.get("operating_cash_flow"))
-        free_cash_flow      = self._to_float(financial_data.get("free_cash_flow"))
-        historical_inflows: list = financial_data.get("historical_inflows") or []
+        if not isinstance(inflows, list):
+            inflows = []
 
-        # ---- 1. Analyze historical trend ------------------------------------
-        # Filter out any non-numeric entries defensively. In practice these come
-        # from PDF parsing which can occasionally produce garbage values.
         valid_inflows = []
-        for item in historical_inflows:
-            try:
-                valid_inflows.append(float(item))
-            except (TypeError, ValueError):
-                notes.append(f"Ignored non-numeric historical inflow value: {item!r}")
+
+        for value in inflows:
+            numeric = self._safe_number(value)
+
+            if numeric is None:
+                notes.append(
+                    "Skipped non-numeric historical inflow."
+                )
+                continue
+
+            valid_inflows.append(numeric)
 
         periods_analyzed = len(valid_inflows)
 
         if periods_analyzed == 0:
-            # No historical data — we can only comment on current period.
             trend = "Insufficient Data"
-            notes.append(
-                "No valid historical inflow data provided. "
-                "Trend analysis requires at least one historical period."
-            )
         elif periods_analyzed == 1:
-            # Single data point — can't determine direction, only polarity.
-            trend = "Positive" if valid_inflows[0] > 0 else "Declining"
-            notes.append("Only one historical period available; trend direction is approximate.")
+            trend = (
+                "Positive"
+                if valid_inflows[0] > 0
+                else "Declining"
+            )
         else:
-            # Count how many periods had positive inflows.
-            positive_periods = sum(1 for v in valid_inflows if v > 0)
-            positive_ratio = positive_periods / periods_analyzed
+            positive = sum(
+                1 for value in valid_inflows if value > 0
+            )
 
-            if positive_ratio >= CASH_FLOW_POSITIVE_PERIOD_RATIO:
-                # Also check if the last period is better than the first
-                # (rising trend within the already-positive majority).
-                trend = "Positive" if valid_inflows[-1] >= valid_inflows[0] else "Stable"
+            ratio = positive / periods_analyzed
+
+            if ratio >= 0.70:
+                if valid_inflows[-1] >= valid_inflows[0]:
+                    trend = "Positive"
+                else:
+                    trend = "Stable"
+            elif ratio >= 0.50:
+                trend = "Stable"
             else:
                 trend = "Declining"
 
-        # ---- 2. Determine overall cash flow status --------------------------
-        # We cross-reference current operating cash flow with historical trend
-        # to arrive at a holistic status label.
-        if operating_cash_flow > 0 and free_cash_flow > 0 and trend == "Positive":
-            status = "Strong"
-            is_adequate = True
-        elif operating_cash_flow > 0 and trend in ("Positive", "Stable", "Insufficient Data"):
-            status = "Stable"
-            is_adequate = True
-        elif operating_cash_flow <= 0 and trend == "Declining":
-            status = "Weak"
-            is_adequate = False
-            notes.append(
-                "Operating cash flow is non-positive AND historical trend is declining. "
-                "This is a significant repayment risk."
-            )
-        else:
-            # Mixed signals — current is negative but trend isn't consistently bad,
-            # or other ambiguous combinations.
-            status = "Weak"
-            is_adequate = operating_cash_flow > 0
-
-        logger.info(
-            "assess_cash_flow completed — status: %s, trend: %s, "
-            "operating_cf: %s, free_cf: %s, periods: %d",
-            status, trend, operating_cash_flow, free_cash_flow, periods_analyzed,
+        is_adequate = bool(
+            operating_cash_flow is not None
+            and operating_cash_flow > 0
+            and free_cash_flow is not None
+            and free_cash_flow > 0
+            and trend in ("Positive", "Stable")
         )
 
+        if (
+            operating_cash_flow is not None
+            and operating_cash_flow > 0
+            and free_cash_flow is not None
+            and free_cash_flow > 0
+            and trend == "Positive"
+        ):
+            status = "Strong"
+        elif (
+            operating_cash_flow is None
+            or operating_cash_flow <= 0
+            or trend == "Declining"
+        ):
+            status = "Weak"
+        else:
+            status = "Stable"
+
         return {
-            "status":              status,
+            "status": status,
             "operating_cash_flow": operating_cash_flow,
-            "free_cash_flow":      free_cash_flow,
-            "trend":               trend,
-            "is_adequate":         is_adequate,
-            "periods_analyzed":    periods_analyzed,
-            "notes":               notes,
+            "free_cash_flow": free_cash_flow,
+            "trend": trend,
+            "is_adequate": is_adequate,
+            "periods_analyzed": periods_analyzed,
+            "notes": notes,
         }
 
-    async def analyze(self, financial_data: dict) -> dict:
-        """
-        Run a full financial health analysis for a borrower.
+    # -----------------------------------------------------------------------
+    # Week-3 Financial Indicator Extraction
+    # -----------------------------------------------------------------------
 
-        This is the top-level method called by the route layer. It orchestrates:
-            Step 1 — Compute financial ratios
-            Step 2 — Assess cash flow adequacy and trend
-            Step 3 — Derive an overall health score (0–100)
-            Step 4 — Determine risk level and lending recommendation
+    async def extract_financial_indicators(
+        self,
+        financial_text: str,
+    ) -> dict:
+        empty = {
+            "interest_coverage": None,
+            "operating_margin": None,
+        }
 
-        The method never raises. On unexpected errors it returns a safe error
-        response that the route layer can return directly to the client.
+        if not financial_text:
+            return empty
 
-        Args:
-            financial_data (dict): See module docstring for full key reference.
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    """
+You are an expert financial analyst.
 
-        Returns:
-            dict: Full analysis result matching FinancialHealthResponse schema
-                  defined in app/routes/analysis.py.
-        """
-        company_name = str(financial_data.get("company_name", "Unknown Company"))
+Extract ONLY:
 
-        try:
-            # --- Step 1: Compute ratios -------------------------------------
-            ratios = await self.compute_ratios(financial_data)
+1. Interest Coverage Ratio
+2. Operating Margin
 
-            # --- Step 2: Assess cash flows ----------------------------------
-            cash_flow = await self.assess_cash_flow(financial_data)
+Rules:
 
-            # --- Step 3: Overall health score (0–100) -----------------------
-            health_score = self._compute_overall_score(
-                dscr=ratios["dscr"],
-                current_ratio=ratios["current_ratio"],
-                de_ratio=ratios["debt_to_equity"],
-                cash_flow_status=cash_flow["status"],
+- Recognize synonyms.
+- If Interest Coverage is missing but EBIT and Interest Expense
+  are present, calculate:
+
+Interest Coverage = EBIT / Interest Expense
+
+- If Operating Margin is missing but Operating Income and Revenue
+  are available, calculate:
+
+Operating Margin = (Operating Income / Revenue) * 100
+
+Return ONLY valid JSON.
+
+Example:
+
+{
+  "interest_coverage": 4.5,
+  "operating_margin": 18.2
+}
+
+Return null when unavailable.
+""",
+                ),
+                (
+                    "user",
+                    "{financial_text}",
+                ),
+            ]
+        )
+
+        params = {
+            "financial_text": str(financial_text)[:10000],
+        }
+
+        if self.structured_llm is not None:
+            try:
+                chain = prompt | self.structured_llm
+                result = await chain.ainvoke(params)
+                return result.model_dump()
+            except Exception:
+                pass
+
+        # -------------------------------
+        # Raw LLM fallback
+        # -------------------------------
+        if self.llm is not None:
+            try:
+                chain = prompt | self.llm
+                response = await chain.ainvoke(params)
+
+                raw_text = (
+                    response.content
+                    if hasattr(response, "content")
+                    else str(response)
+                )
+
+                parsed = self._extract_json_from_text(raw_text)
+                output = empty.copy()
+
+                for field in (
+                    "interest_coverage",
+                    "operating_margin",
+                ):
+                    value = parsed.get(field)
+                    try:
+                        output[field] = (
+                            float(value)
+                            if value is not None
+                            else None
+                        )
+                    except (TypeError, ValueError):
+                        output[field] = None
+
+                return output
+
+            except Exception:
+                pass
+
+        return empty
+
+    # -----------------------------------------------------------------------
+    # Complete Financial Analysis
+    # -----------------------------------------------------------------------
+
+    async def analyze(
+        self,
+        financial_data: dict,
+    ) -> dict:
+        financial_data = financial_data or {}
+
+        ratios = await self.compute_ratios(financial_data)
+        cash_flow = await self.assess_cash_flow(financial_data)
+
+        score = 50.0
+
+        dscr = ratios["dscr"]
+        current_ratio = ratios["current_ratio"]
+        debt_to_equity = ratios["debt_to_equity"]
+
+        # -------------------------------
+        # DSCR Score
+        # -------------------------------
+        if dscr is not None:
+            if dscr >= DSCR_SAFE_THRESHOLD:
+                score += 25
+            elif dscr >= DSCR_MIN_THRESHOLD:
+                score += 10
+            else:
+                score -= 25
+
+        # -------------------------------
+        # Current Ratio Score
+        # -------------------------------
+        if current_ratio is not None:
+            if current_ratio >= CURRENT_RATIO_STRONG:
+                score += 15
+            elif current_ratio >= CURRENT_RATIO_SAFE:
+                score += 5
+            else:
+                score -= 15
+
+        # -------------------------------
+        # Debt-to-Equity Score
+        # -------------------------------
+        if debt_to_equity is not None:
+            if 0 <= debt_to_equity <= 1:
+                score += 10
+            elif debt_to_equity > DE_RATIO_HIGH_RISK:
+                score -= 15
+
+        # -------------------------------
+        # Cash Flow Score
+        # -------------------------------
+        if cash_flow["status"] == "Strong":
+            score += 10
+        elif cash_flow["status"] == "Weak":
+            score -= 10
+
+        score = max(0.0, min(score, 100.0))
+
+        # ---------------------------------------------------------
+        # Risk Level
+        # ---------------------------------------------------------
+        risk_level = self._classify_dscr(dscr)
+
+        # ---------------------------------------------------------
+        # Recommendation
+        # ---------------------------------------------------------
+        if risk_level == "Low":
+            recommendation = (
+                "Approval recommended. "
+                "Financial health is strong with good liquidity, "
+                "debt servicing capability, and positive cash flow."
+            )
+        elif risk_level == "Medium":
+            recommendation = (
+                "Conditional approval recommended. "
+                "Review supporting financial documents before making "
+                "the final lending decision."
+            )
+        else:
+            recommendation = (
+                "Not recommended due to weak financial health, "
+                "poor debt servicing ability, or inadequate cash flow."
             )
 
-            # --- Step 4: Risk classification and recommendation -------------
-            risk_level = self._classify_dscr(ratios["dscr"])
-            recommendation = self._build_recommendation(health_score, risk_level)
+        # ---------------------------------------------------------
+        # Analysis Notes
+        # ---------------------------------------------------------
+        analysis_notes = []
+        analysis_notes.extend(
+            ratios.get("notes", [])
+        )
+        analysis_notes.extend(
+            cash_flow.get("notes", [])
+        )
 
-            # Collect all analysis notes into one consolidated list so the
-            # consumer gets a single place to look for warnings.
-            all_notes = ratios.get("notes", []) + cash_flow.get("notes", [])
-
-            logger.info(
-                "analyze completed for '%s' — score: %.2f, risk: %s",
-                company_name, health_score, risk_level,
-            )
-
-            return {
-                "status":                "success",
-                "company_name":          company_name,
-                "financial_health_score": health_score,
-                "risk_level":            risk_level,
-                "ratios": {
-                    "dscr":                    ratios["dscr"],
-                    "current_ratio":           ratios["current_ratio"],
-                    "debt_to_equity":          ratios["debt_to_equity"],
-                    "quick_ratio":             ratios["quick_ratio"],
-                },
-                "cash_flow_assessment": {
-                    "status":              cash_flow["status"],
-                    "operating_cash_flow": cash_flow["operating_cash_flow"],
-                    "free_cash_flow":      cash_flow["free_cash_flow"],
-                    "trend":               cash_flow["trend"],
-                    "is_adequate":         cash_flow["is_adequate"],
-                    "periods_analyzed":    cash_flow["periods_analyzed"],
-                },
-                "recommendation": recommendation,
-                "analysis_notes": all_notes,
-            }
-
-        except Exception as exc:
-            # We never let an exception escape to the route layer.
-            # Log it for the engineering team and return a safe fallback.
-            logger.exception(
-                "FinancialHealthAgent.analyze raised an unexpected error for '%s': %s",
-                company_name, exc,
-            )
-            return {
-                "status":                "error",
-                "company_name":          company_name,
-                "financial_health_score": 0.0,
-                "risk_level":            "Undetermined",
-                "ratios":                {},
-                "cash_flow_assessment":  {},
-                "recommendation":        "Analysis could not be completed due to an internal error.",
-                "analysis_notes":        [f"Internal error: {str(exc)}"],
-            }
+        # ---------------------------------------------------------
+        # Final Response
+        # ---------------------------------------------------------
+        return {
+            "status": "success",
+            "company_name": financial_data.get(
+                "company_name",
+                "Unknown",
+            ),
+            "financial_health_score": round(score, 2),
+            "risk_level": risk_level,
+            "ratios": ratios,
+            "cash_flow_assessment": cash_flow,
+            "recommendation": recommendation,
+            "analysis_notes": analysis_notes,
+        }
