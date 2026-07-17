@@ -5,6 +5,7 @@
 # Unauthorized use, reproduction, or distribution is strictly prohibited.
 # =============================================================================
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional
 from app.agents.input.realtime_intelligence import RealtimeIntelligenceAgent
@@ -67,14 +68,13 @@ async def run_secondary_research(raw_request: Request):
         
     except Exception as e:
         print(f"[ROUTE /web-research] Error: {e}")
-        return {
-            "status": "success",
-            "data": {
-                "company_news": [f"Research failed: {str(e)}"],
-                "sector_headwinds": [],
-                "litigation_signals": []
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "error",
+                "message": f"Web research encountered an error: {str(e)}"
             }
-        }
+        )
 
 
 @router.post("/adjust-score")
@@ -103,18 +103,10 @@ async def apply_qualitative_insights(raw_request: Request):
         
     except Exception as e:
         print(f"[ROUTE /adjust-score] Error: {e}")
-        # Try to extract base_score from original body for fallback
-        try:
-            fallback_score = max(0, min(100, int(body.get("base_score", 50))))
-        except Exception:
-            fallback_score = 50
-            
-        return {
-            "status": "success",
-            "data": {
-                "original_score": fallback_score,
-                "adjusted_score": fallback_score,
-                "adjustment_rationale": f"Score adjustment failed: {str(e)}. Original score returned.",
-                "critical_flags": []
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "error",
+                "message": f"Score adjustment encountered an error: {str(e)}"
             }
-        }
+        )

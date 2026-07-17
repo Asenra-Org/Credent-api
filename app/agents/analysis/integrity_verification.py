@@ -4,8 +4,15 @@
 # Copyright (c) 2026 Asenra. All rights reserved.
 # Unauthorized use, reproduction, or distribution is strictly prohibited.
 # =============================================================================
+import logging
 import pandas as pd
 import numpy as np
+from typing import List, Dict, Any
+
+logger = logging.getLogger(__name__)
+
+# Threshold: flag MEDIUM warning when monthly GST vs Bank difference exceeds this.
+_MONTHLY_VARIANCE_THRESHOLD: float = 0.20
 
 # Default response when analysis cannot be performed
 DEFAULT_INTEGRITY = {
@@ -16,10 +23,18 @@ DEFAULT_INTEGRITY = {
 }
 
 class IntegrityVerificationAgent:
-    def __init__(self):
+    def __init__(self) -> None:
         pass
 
-    async def cross_validate(self, gst_data: list, bank_data: list) -> dict:
+    # -------------------------------------------------------------------------
+    # Public API
+    # -------------------------------------------------------------------------
+
+    async def cross_validate(
+        self,
+        gst_data: List[Dict[str, Any]],
+        bank_data: List[Dict[str, Any]],
+    ) -> dict:
         """Cross-validate data across GST returns and bank statements with full error handling."""
         
         flags = []
@@ -123,13 +138,237 @@ class IntegrityVerificationAgent:
         else:
             warnings.append("Circular trading check skipped — missing required GST columns (type, counterparty_gstin, taxable_value).")
 
+        # 3. Monthly GST-to-Bank Cross-Validation
+        monthly_flags, monthly_warnings = self._cross_validate_monthly(
+            gst_data=gst_data,
+            bank_data=bank_data,
+        )
+        flags.extend(monthly_flags)
+        warnings.extend(monthly_warnings)
+
         result = {
             "status": "completed",
             "flags_detected": len(flags),
             "flags": flags
         }
-        
+
         if warnings:
             result["warnings"] = warnings
-        
+
         return result
+
+    # -------------------------------------------------------------------------
+    # Private Helpers
+    # -------------------------------------------------------------------------
+
+    def _cross_validate_monthly(
+        self,
+        gst_data: List[Dict[str, Any]],
+        bank_data: List[Dict[str, Any]],
+    ) -> tuple[list, list]:
+        """
+        Compare monthly GST sales against monthly bank credit inflows.
+
+        Algorithm
+        ---------
+        1. Build a monthly GST sales series: group ``gst_data`` by the
+           ``period`` column (YYYY-MM) and sum ``taxable_value``.
+        2. Build a monthly bank-credit series: parse ``date`` in ``bank_data``
+           to period YYYY-MM, filter rows where ``type == 'CREDIT'``, then
+           group and sum ``amount``.
+        3. Outer-merge the two series on period so months present in only one
+           source are still evaluated (missing values become 0).
+        4. For each month calculate:
+
+               pct_diff = |gst_sales - bank_credits| / max(gst_sales, 1)
+
+        5. Flag MEDIUM when ``pct_diff > _MONTHLY_VARIANCE_THRESHOLD`` (20%).
+
+        Returns
+        -------
+        (flags: list[dict], warnings: list[str])
+            flags    — zero or more flag dicts following the project schema.
+            warnings — zero or more human-readable skip/error messages.
+        """
+        flags: list = []
+        warnings: list = []
+
+        # --- Require both date/period columns to proceed ---
+        df_gst = pd.DataFrame(gst_data)
+        df_bank = pd.DataFrame(bank_data)
+
+        has_gst_cols = (
+            "taxable_value" in df_gst.columns
+            and "period" in df_gst.columns
+        )
+        has_bank_cols = (
+            "amount" in df_bank.columns
+            and "type" in df_bank.columns
+            and "date" in df_bank.columns
+        )
+
+        if not has_gst_cols or not has_bank_cols:
+            missing: list[str] = []
+            if not has_gst_cols:
+                missing.append("gst_data.period / gst_data.taxable_value")
+            if not has_bank_cols:
+                missing.append("bank_data.date / bank_data.type / bank_data.amount")
+            warnings.append(
+                f"Monthly GST-Bank cross-validation skipped — missing columns: "
+                f"{', '.join(missing)}"
+            )
+            return flags, warnings
+
+        try:
+            # ------------------------------------------------------------------
+            # Step 1 — Monthly GST sales aggregation
+            # ------------------------------------------------------------------
+            # Coerce to numeric; non-parseable values become NaN then 0.
+            df_gst["taxable_value"] = pd.to_numeric(
+                df_gst["taxable_value"], errors="coerce"
+            ).fillna(0.0)
+
+            # Normalise period: accept both 'YYYY-MM' and any parseable date.
+            df_gst["period"] = self._normalise_period(df_gst["period"])
+
+            # Drop rows where period could not be parsed.
+            gst_valid = df_gst.dropna(subset=["period"])
+
+            if gst_valid.empty:
+                warnings.append(
+                    "Monthly GST-Bank cross-validation skipped — no valid period "
+                    "values found in gst_data."
+                )
+                return flags, warnings
+
+            # Group by month and sum; duplicate months are intentionally merged.
+            monthly_gst: pd.Series = (
+                gst_valid
+                .groupby("period")["taxable_value"]
+                .agg("sum")
+                .rename("gst_sales")
+            )
+
+            # ------------------------------------------------------------------
+            # Step 2 — Monthly bank credit aggregation
+            # ------------------------------------------------------------------
+            df_bank["amount"] = pd.to_numeric(
+                df_bank["amount"], errors="coerce"
+            ).fillna(0.0)
+
+            # Filter to CREDIT transactions only (case-insensitive).
+            credits_mask = df_bank["type"].str.upper() == "CREDIT"
+            df_credits = df_bank[credits_mask].copy()
+
+            if df_credits.empty:
+                warnings.append(
+                    "Monthly GST-Bank cross-validation skipped — no CREDIT "
+                    "transactions found in bank_data."
+                )
+                return flags, warnings
+
+            # Parse transaction dates → 'YYYY-MM' period key.
+            df_credits["period"] = self._normalise_period(df_credits["date"])
+            bank_valid = df_credits.dropna(subset=["period"])
+
+            if bank_valid.empty:
+                warnings.append(
+                    "Monthly GST-Bank cross-validation skipped — no parseable "
+                    "date values found in bank_data."
+                )
+                return flags, warnings
+
+            monthly_bank: pd.Series = (
+                bank_valid
+                .groupby("period")["amount"]
+                .agg("sum")
+                .rename("bank_credits")
+            )
+
+            # ------------------------------------------------------------------
+            # Step 3 — Outer merge: retain months present in either source.
+            # ------------------------------------------------------------------
+            merged: pd.DataFrame = (
+                pd.merge(
+                    monthly_gst.reset_index(),
+                    monthly_bank.reset_index(),
+                    on="period",
+                    how="outer",
+                )
+                .fillna(0.0)
+                .sort_values("period")
+                .reset_index(drop=True)
+            )
+
+            # ------------------------------------------------------------------
+            # Step 4 & 5 — Month-by-month percentage difference & flagging.
+            # ------------------------------------------------------------------
+            for _, row in merged.iterrows():
+                period: str = str(row["period"])
+                gst_sales: float = float(row["gst_sales"])
+                bank_credits: float = float(row["bank_credits"])
+
+                # Denominator: use GST sales as the reference baseline.
+                # Clamp to 1.0 so we never divide by zero.
+                denominator: float = max(gst_sales, 1.0)
+                pct_diff: float = abs(gst_sales - bank_credits) / denominator
+
+                if pct_diff > _MONTHLY_VARIANCE_THRESHOLD:
+                    flags.append({
+                        "flag": "Monthly GST-Bank Mismatch",
+                        "severity": "MEDIUM",
+                        "details": (
+                            f"Period {period}: GST Sales \u20b9{gst_sales:,.0f} vs "
+                            f"Bank Inflows \u20b9{bank_credits:,.0f} "
+                            f"(diff {pct_diff:.1%})"
+                        ),
+                    })
+                    logger.debug(
+                        "[IntegrityVerificationAgent] Monthly mismatch %s: "
+                        "gst=%.0f bank=%.0f diff=%.1f%%",
+                        period, gst_sales, bank_credits, pct_diff * 100,
+                    )
+
+        except Exception as exc:
+            logger.exception(
+                "[IntegrityVerificationAgent] Monthly cross-validation failed."
+            )
+            warnings.append(
+                f"Monthly GST-Bank cross-validation encountered an error: {exc}"
+            )
+
+        return flags, warnings
+
+    @staticmethod
+    def _normalise_period(series: pd.Series) -> pd.Series:
+        """
+        Convert a Series of date strings to 'YYYY-MM' period keys.
+
+        Handles both:
+        - GSTR period format: ``'2024-03'``  (already YYYY-MM)
+        - Bank statement date format: ``'2024-03-15'`` or other parseable dates.
+
+        Unparseable values are silently coerced to NaT so the caller can
+        drop them with ``dropna()`` without crashing.
+
+        Parameters
+        ----------
+        series : pd.Series
+            Raw string column from the input DataFrame.
+
+        Returns
+        -------
+        pd.Series
+            String Series in 'YYYY-MM' format, with NaN for invalid entries.
+        """
+        # First attempt direct YYYY-MM match (no datetime parsing overhead).
+        # This covers the GSTR native format and is O(n).
+        yyyy_mm_mask = series.astype(str).str.match(r"^\d{4}-\d{2}$")
+
+        if yyyy_mm_mask.all():
+            # All values are already in the canonical format.
+            return series.astype(str)
+
+        # Fall back to pandas datetime parsing for full date strings.
+        parsed = pd.to_datetime(series, errors="coerce")
+        return parsed.dt.to_period("M").astype(str).where(parsed.notna(), other=pd.NA)
