@@ -57,8 +57,8 @@ class RatioMetrics(BaseModel):
 
 class CashFlowMetrics(BaseModel):
     status: str = Field(..., description="Overall cash flow health (e.g., Stable, Strong, Weak)")
-    operating_cash_flow: float = Field(..., description="Net cash provided by operating activities")
-    free_cash_flow: float = Field(..., description="Operating cash flow minus capital expenditures")
+    operating_cash_flow: Optional[float] = Field(default=None, description="Net cash provided by operating activities")
+    free_cash_flow: Optional[float] = Field(default=None, description="Operating cash flow minus capital expenditures")
     trend: str = Field(..., description="Cash flow trend over the analyzed period (e.g., Positive, Declining)")
 
 class FinancialHealthResponse(BaseModel):
