@@ -13,6 +13,16 @@ from app.agents.input.document_ingestion import DocumentIngestionAgent
 
 router = APIRouter()
 
+# ---------------------------------------------------------------------------
+# Forensics Penalty — AI-A-W4
+# Deduct exactly this many points from base_score when document tampering
+# is detected by the pikepdf forensics layer.
+# Declared as a module-level constant so it can be imported and asserted
+# in tests without magic numbers, and adjusted by risk policy without
+# touching business logic.
+# ---------------------------------------------------------------------------
+FORENSICS_PENALTY: int = 15
+
 def run_pdf_forensics(file_path: str):
     """
     Scans a PDF's metadata to detect potential tampering or unnatural original
@@ -56,6 +66,95 @@ def run_pdf_forensics(file_path: str):
         report["flags"].append("ERROR: Could not verify document integrity")
 
     return report
+
+
+def apply_forensics_penalty(base_score: int, forensics_result: dict) -> dict:
+    """
+    Apply a deterministic credit score penalty when pikepdf forensics detects
+    document tampering (``is_suspicious == True``).
+
+    Design decisions
+    ----------------
+    * **Pure function** — no side effects, no I/O, trivially unit-testable.
+    * **Single application** — the penalty is applied exactly once per call;
+      callers must not call this function twice for the same document.
+    * **Score floor** — the adjusted score is clamped to 0 (never negative).
+    * **Defensive** — every failure mode returns the original score unchanged;
+      the system never crashes on bad forensics data.
+
+    Parameters
+    ----------
+    base_score : int
+        The AI-estimated credit score (0–100) produced by
+        ``DocumentIngestionAgent.parse_financial_statement()``.
+    forensics_result : dict
+        The dict returned by ``run_pdf_forensics()``.  Expected shape::
+
+            {
+                "is_suspicious": bool,
+                "flags": [str, ...],
+                "metadata": {"creator": str, "producer": str}
+            }
+
+        All keys are treated as optional — missing or malformed values are
+        handled gracefully.
+
+    Returns
+    -------
+    dict
+        {
+            "original_score"  : int  — base_score before any penalty,
+            "adjusted_score"  : int  — base_score after penalty (>= 0),
+            "penalty_applied" : bool — True only when penalty was deducted,
+            "penalty_points"  : int  — points deducted (0 or FORENSICS_PENALTY),
+        }
+    """
+    # --- 1. Normalise base_score -------------------------------------------
+    # Coerce to int; fall back to 0 on non-numeric input so subsequent
+    # arithmetic never raises TypeError or ValueError.
+    try:
+        safe_score: int = max(0, int(base_score))
+    except (TypeError, ValueError):
+        safe_score = 0
+
+    _no_penalty = {
+        "original_score":  safe_score,
+        "adjusted_score":  safe_score,
+        "penalty_applied": False,
+        "penalty_points":  0,
+    }
+
+    # --- 2. Guard: forensics_result must be a non-empty dict ---------------
+    if not forensics_result or not isinstance(forensics_result, dict):
+        # Missing or completely invalid forensics data — cannot determine
+        # suspicion. Return score unchanged (safe-fail).
+        return _no_penalty
+
+    # --- 3. Extract and validate is_suspicious -----------------------------
+    raw_flag = forensics_result.get("is_suspicious")
+
+    if raw_flag is None:
+        # Key is absent from the dict — treat as not suspicious.
+        return _no_penalty
+
+    try:
+        is_suspicious: bool = bool(raw_flag)
+    except Exception:
+        # Unexpected type that bool() itself cannot handle (extremely rare).
+        return _no_penalty
+
+    # --- 4. Apply penalty (once, with floor at 0) --------------------------
+    if not is_suspicious:
+        return _no_penalty
+
+    adjusted: int = max(0, safe_score - FORENSICS_PENALTY)
+
+    return {
+        "original_score":  safe_score,
+        "adjusted_score":  adjusted,
+        "penalty_applied": True,
+        "penalty_points":  FORENSICS_PENALTY,
+    }
 
 # Lazy init — catch import/init errors
 try:
@@ -123,6 +222,19 @@ async def ingest_pdf_document(file: UploadFile = File(...)):
         # 3. Run LLM parsing
         ai_analysis = await agent.parse_financial_statement(raw_text)
 
+        # 4. Apply forensics penalty (AI-A-W4) --------------------------------
+        # Read the pikepdf forensics result and deduct FORENSICS_PENALTY points
+        # from the AI-estimated base_score when tampering is detected.
+        # This is applied exactly once here — the only place where both
+        # `forensics` and `ai_analysis` are in scope simultaneously.
+        forensics_penalty = apply_forensics_penalty(
+            base_score=ai_analysis.get("base_score", 0),
+            forensics_result=forensics,
+        )
+        # Mutate base_score in-place so downstream consumers always see the
+        # adjusted value without needing to be aware of the penalty logic.
+        ai_analysis["base_score"] = forensics_penalty["adjusted_score"]
+
         appraisal_id = f"APPRAISAL_{int(datetime.now().timestamp())}"
 
         return {
@@ -131,6 +243,7 @@ async def ingest_pdf_document(file: UploadFile = File(...)):
             "filename": safe_filename,
             "tables_found": extraction_result.get("tables_count", 0),
             "forensics": forensics,
+            "forensics_penalty": forensics_penalty,
             "ai_analysis": ai_analysis
         }
 
