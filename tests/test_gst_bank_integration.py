@@ -675,14 +675,14 @@ class TestIntegrityFlagsDatabaseWrite:
                 "integrity_flags": integrity_result,
             })
 
-        assert record_id is not None
-        assert record_id.startswith("REC_")
+            assert record_id is not None
+            assert record_id.startswith("REC_")
 
-        recent = get_recent_appraisals(limit=10)
-        saved_record = next(
-            (r for r in recent if r.get("company_name") == "GST Bank Integration Test Co"),
-            None,
-        )
+            recent = get_recent_appraisals(limit=10)
+            saved_record = next(
+                (r for r in recent if r.get("company_name") == "GST Bank Integration Test Co"),
+                None,
+            )
 
         assert saved_record is not None
         assert saved_record["integrity_flags"]["flags_detected"] == 1
