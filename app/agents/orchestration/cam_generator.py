@@ -48,12 +48,13 @@ class CAMGeneratorAgent:
             GOVERNANCE PROTOCOL:
             - APPROVE: Only if Score >= 75 AND no severe integrity/legal flags AND Current Ratio >= 1.0.
             - MANUAL REVIEW: If Score is 60-74 OR if Current Ratio < 1.0 OR moderate risk clustering (e.g. concentration + liquidity).
-            - REJECT: Only if Score < 60 OR severe fraud/defaults found.
+            - REJECT: If Score < 60 (MUST ALWAYS REJECT) OR severe fraud/defaults found.
             
-            Evaluation Criteria:
-            - Evaluate based on the Five Cs of Credit.
-            - If financials (Revenue/Debt) are missing or null, you MUST default to 'MANUAL REVIEW' regardless of base score.
-            - If Current Ratio is < 1.0, you MUST recommend 'MANUAL REVIEW' for liquidity structuring.
+            Decision Priority (Highest to Lowest):
+            1. If Score < 60 -> MUST REJECT. No exceptions.
+            2. Else if financials are missing -> MANUAL REVIEW.
+            3. Else if Current Ratio < 1.0 -> MANUAL REVIEW.
+            4. Else evaluate the remaining Five Cs criteria to determine APPROVE or MANUAL REVIEW in accordance with the credit policy.
             
             CRITICAL INSTRUCTION: You MUST output a JSON object containing ALL of the following keys.
             
