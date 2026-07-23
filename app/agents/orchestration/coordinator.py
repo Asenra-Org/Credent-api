@@ -269,13 +269,13 @@ class AgentCoordinator:
             )
         except Exception as cam_exc:
             logger.warning("Decision engine failed: %s. Triggering fallback decision mapping.", str(cam_exc))
-            decision = "APPROVE" if score >= 60 else "REJECT"
+            decision = "MANUAL REVIEW"
             cam_result = {
                 "five_cs": {k: "Manual review required due to system error." for k in ["character", "capacity", "capital", "collateral", "conditions"]},
                 "decision": decision,
-                "recommended_loan_amount": "Manual Assessment Required" if decision == "APPROVE" else "0",
-                "recommended_interest_rate": "Manual Assessment Required" if decision == "APPROVE" else "N/A",
-                "decision_rationale": f"CAM Generator failed. Score: {score}/100. Local decision fallback triggered. Manual review recommended."
+                "recommended_loan_amount": "Withheld",
+                "recommended_interest_rate": "Withheld",
+                "decision_rationale": "Underwriting could not be completed because CAM generation failed."
             }
 
         appraisal_id = f"APPRAISAL_{int(datetime.now().timestamp())}"
