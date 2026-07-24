@@ -7,6 +7,9 @@
 import os
 import json
 import re
+import csv
+from pathlib import Path
+from collections import defaultdict
 from typing import Any, Callable, List, Optional
 
 from langchain_groq import ChatGroq
@@ -79,6 +82,9 @@ class SectorContextAgent:
         self.structured_llm_outlook = self._build_structured_llm(SectorOutlookReport, "outlook")
         self.structured_llm_rbi_legacy = self._build_structured_llm(RbiPolicyList, "rbi-legacy")
 
+        # Local macro headwinds database — loaded once here, never re-read per request.
+        self.macro_headwinds = self._load_macro_headwinds()
+
     def _build_structured_llm(self, schema: type[BaseModel], label: str):
         """Wrap with_structured_output() init in a try/except so a schema
         binding failure at startup degrades to the raw-JSON fallback tier
@@ -89,6 +95,65 @@ class SectorContextAgent:
         except Exception as e:
             print(f"[WARN] Structured output init failed ({label}): {e}")
             return None
+
+    def _load_macro_headwinds(self):
+        """
+        Load macro headwinds from local CSV, once, at agent init.
+
+        Stores full rows (risk_factor, severity, category) per sector so
+        richer metadata is available in memory without re-reading the file.
+
+        Returns:
+            dict[str, list[dict]]
+        """
+
+        csv_path = (
+            Path(__file__).resolve().parents[2]
+            / "database"
+            / "macro_headwinds.csv"
+        )
+        print("CSV Path:", csv_path)
+        sector_data = defaultdict(list)
+
+        try:
+            with open(csv_path, encoding="utf-8", newline="") as file:
+                reader = csv.DictReader(file)
+
+                for row in reader:
+                    sector = row["sector"].strip().lower()
+
+                    sector_data[sector].append({
+                        "risk_factor": row.get("risk_factor", "").strip(),
+                        "severity": row.get("severity", "").strip(),
+                        "category": row.get("category", "").strip(),
+                    })
+
+        except FileNotFoundError:
+            print(f"[WARN] Macro headwinds CSV not found: {csv_path}")
+
+        except Exception as e:
+            print(f"[WARN] Failed loading macro headwinds: {e}")
+
+        print("Loaded sectors:", list(sector_data.keys()))
+        return dict(sector_data)
+
+    def get_local_macro_headwinds(self, sector: str) -> List[str]:
+        """
+        Retrieve macro headwinds for a sector from local CSV.
+
+        Returns only the risk_factor strings (backward compatible),
+        even though rows are stored internally with severity/category.
+        """
+
+        if not sector:
+            return []
+
+        rows = self.macro_headwinds.get(sector.strip().lower(), [])
+
+        return [row["risk_factor"] for row in rows if row.get("risk_factor")]
+
+    def has_sector(self, sector: str) -> bool:
+        return sector.strip().lower() in self.macro_headwinds
 
     @staticmethod
     def _extract_json_from_text(text: str) -> dict:
@@ -197,12 +262,16 @@ class SectorContextAgent:
         }
 
     async def get_sector_outlook(self, sector: str) -> dict:
-        """Get current macroeconomic outlook and risk rating for a given sector."""
+        """Get current macroeconomic outlook and risk rating for a given sector.
+        
+        LLM supplies 'outlook', 'growth_rate_projected', 'risk_score', and 'risk_level'.
+        'risk_factors' is strictly overridden by local CSV data via get_local_macro_headwinds().
+        """
         if not sector or not sector.strip():
             print("[SECTOR] No sector provided, returning defaults.")
             return {**DEFAULT_SECTOR_OUTLOOK, "sector": "Unknown Sector"}
 
-        sector = sector.strip()
+        clean_sector = sector.strip()
 
         prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a macroeconomic credit risk analyst at a lending institution.
@@ -224,7 +293,6 @@ class SectorContextAgent:
             }}"""),
             ("user", "Sector: {sector}"),
         ])
-
         result = await self._run_with_fallback(
             prompt=prompt,
             invoke_params={"sector": sector},
@@ -233,7 +301,21 @@ class SectorContextAgent:
             default=DEFAULT_SECTOR_OUTLOOK,
             log_prefix="[SECTOR]",
         )
+
+
+        # Get risk factors from local CSV
+        local_headwinds = self.get_local_macro_headwinds(sector)
+
+        print(f"[DEBUG] Sector = {sector}")
+        print(f"[DEBUG] Local Headwinds = {local_headwinds}")
+
+
+        if local_headwinds:
+            result["risk_factors"] = local_headwinds
+
+
         result["sector"] = sector
+
         return result
 
     # -- RBI policy compliance --------------------------------------------------

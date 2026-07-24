@@ -70,3 +70,7 @@ uploads/
 # Local Databases
 *.db
 *.sqlite
+
+# Internal AI Memory
+.ai/
+

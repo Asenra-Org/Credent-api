@@ -1,0 +1,53 @@
+sector,risk_factor,severity,category
+technology,Interest rate increases raising cost of capital,High,Macro
+technology,Global chip and semiconductor shortages,Medium,Supply Chain
+technology,Rapid obsolescence from AI-driven disruption,Medium,Technology
+technology,Data localization and privacy regulation,Medium,Regulatory
+manufacturing,Volatile input and commodity prices,High,Macro
+manufacturing,Supply chain disruptions and logistics delays,Medium,Supply Chain
+manufacturing,Rising energy costs,Medium,Macro
+manufacturing,Labor cost inflation,Low,Macro
+real estate,Rising interest rates impacting home loan demand,High,Macro
+real estate,Regulatory changes under RERA,Medium,Regulatory
+real estate,Oversupply in select micro-markets,Medium,Demand
+real estate,Construction material cost inflation,Medium,Macro
+agriculture,Monsoon dependency and erratic rainfall,High,Macro
+agriculture,Volatile commodity and MSP pricing,Medium,Macro
+agriculture,Pest infestations and crop disease,Medium,Operational
+agriculture,Fragmented land holdings limiting scale,Low,Structural
+healthcare,Regulatory pricing caps on essential drugs,Medium,Regulatory
+healthcare,Rising input costs for APIs and raw materials,Medium,Macro
+healthcare,Talent shortage of skilled medical staff,Low,Operational
+healthcare,Reimbursement delays from insurers,Medium,Operational
+retail,Shift to e-commerce eroding footfall,Medium,Demand
+retail,Discretionary spending sensitivity to inflation,High,Macro
+retail,Rising commercial rental costs,Medium,Macro
+retail,Inventory and working capital pressure,Medium,Operational
+textiles,Cotton and raw material price volatility,High,Macro
+textiles,Global demand slowdown in export markets,Medium,Trade
+textiles,Rising compliance costs for labor and environment,Medium,Regulatory
+textiles,Competition from low-cost manufacturing hubs,Medium,Competitive
+automotive,Semiconductor supply constraints,Medium,Supply Chain
+automotive,Transition costs to EV technology,High,Technology
+automotive,Fluctuating steel and aluminum prices,Medium,Macro
+automotive,Emission norm compliance costs,Medium,Regulatory
+hospitality,Seasonal and cyclical demand volatility,Medium,Demand
+hospitality,Sensitivity to fuel and travel costs,Medium,Macro
+hospitality,High fixed cost base and thin margins,Medium,Operational
+hospitality,Geopolitical or pandemic-related disruptions,High,External
+infrastructure,Long project gestation and execution delays,High,Operational
+infrastructure,Dependence on government capex cycles,Medium,Macro
+infrastructure,High leverage and interest rate sensitivity,High,Macro
+infrastructure,Land acquisition and regulatory approval delays,Medium,Regulatory
+pharmaceuticals,US FDA and export market compliance risk,Medium,Regulatory
+pharmaceuticals,Price control under NPPA,Medium,Regulatory
+pharmaceuticals,Patent expiries and generic competition,Medium,Competitive
+pharmaceuticals,API import dependency on China,Medium,Supply Chain
+energy,Volatile crude oil and gas prices,High,Macro
+energy,Policy shifts toward renewable mandates,Medium,Regulatory
+energy,High capital intensity and long payback periods,Medium,Structural
+energy,Currency risk on imported fuel,Medium,Macro
+banking and financial services,Asset quality stress and rising NPAs,Medium,Credit
+banking and financial services,Interest rate and liquidity risk,High,Macro
+banking and financial services,Regulatory capital adequacy requirements,Medium,Regulatory
+banking and financial services,Cybersecurity and digital fraud risk,Medium,Operational
