@@ -169,8 +169,19 @@ def normalize_to_inr(value):
     return normalized
 
 # UPGRADED SCHEMA: Focus on hard financials to prevent "Tone-based" hallucinations
-from typing import Optional
-from pydantic import BaseModel, Field
+from typing import Optional, Dict
+
+class CitationDetail(BaseModel):
+    page: Optional[int] = Field(None, description="The 1-based page number where the metric was found")
+    snippet: Optional[str] = Field(None, description="The exact text snippet supporting the metric")
+
+class CitationMetadata(BaseModel):
+    revenue: Optional[CitationDetail] = Field(None, description="Citation for revenue/turnover")
+    debt: Optional[CitationDetail] = Field(None, description="Citation for total debt/borrowings")
+    equity: Optional[CitationDetail] = Field(None, description="Citation for shareholder equity/net worth")
+    total_revenue: Optional[CitationDetail] = Field(None, description="Citation for total_revenue")
+    total_debt: Optional[CitationDetail] = Field(None, description="Citation for total_debt")
+    shareholder_equity: Optional[CitationDetail] = Field(None, description="Citation for shareholder_equity")
 
 class RiskExtraction(BaseModel):
     company_name: str = Field(description="The name of the company applying for credit")
@@ -188,6 +199,8 @@ class RiskExtraction(BaseModel):
     financial_commitments: List[str] = Field(default_factory=list, description="Existing loans, guarantees, or credit lines")
     legal_risks: List[str] = Field(default_factory=list, description="Ongoing litigation, defaults, or notices")
     sanction_details: List[str] = Field(default_factory=list, description="Details of limits sanctioned by other banks")
+    citations: Optional[CitationMetadata] = Field(None, description="Source citations for key financial metrics")
+
 # Default fallback when all extraction fails
 DEFAULT_EXTRACTION = {
     "company_name": "Unknown Entity",
@@ -201,7 +214,15 @@ DEFAULT_EXTRACTION = {
     "qualitative_notes": "Document could not be fully processed. Manual review required.",
     "financial_commitments": [],
     "legal_risks": ["Unable to extract — manual review required"],
-    "sanction_details": []
+    "sanction_details": [],
+    "citations": {
+        "revenue": None,
+        "debt": None,
+        "equity": None,
+        "total_revenue": None,
+        "total_debt": None,
+        "shareholder_equity": None
+    }
 }
 
 class DocumentIngestionAgent:
@@ -236,7 +257,7 @@ class DocumentIngestionAgent:
 
         # Validate file exists
         if not os.path.exists(file_path):
-            return {"text": "", "tables_count": 0, "error": f"File not found: {file_path}"}
+            return {"text": "", "pages": [], "tables_count": 0, "error": f"File not found: {file_path}"}
 
         # -------------------------------------------------------------------
         # Attempt 1: Standard Digital Extraction
@@ -281,7 +302,7 @@ class DocumentIngestionAgent:
 
         # Final check: if we still have no text, return early with error
         if len(raw_text.strip()) < 10:
-            return {"text": "", "tables_count": 0, "error": "No readable text could be extracted from the PDF."}
+            return {"text": "", "pages": [], "tables_count": 0, "error": "No readable text could be extracted from the PDF."}
 
         # -------------------------------------------------------------------
         # Step 3: Remove duplicate page headers
@@ -289,13 +310,20 @@ class DocumentIngestionAgent:
         # per-page leading lines independently.
         # -------------------------------------------------------------------
         pages_text = _remove_duplicate_headers(pages_text)
-        raw_text = "\n".join(pages_text)
 
         # -------------------------------------------------------------------
-        # Step 4: Sanitize extracted text
-        # Strips control characters and collapses excessive blank lines.
+        # Step 4: Sanitize extracted text per-page and create metadata
+        # Strips control characters and collapses excessive blank lines,
+        # preserving page boundaries with explicit markers.
         # -------------------------------------------------------------------
-        clean_text = self._clean_text(raw_text)
+        pages_metadata = []
+        cleaned_pages = []
+        for idx, page_content in enumerate(pages_text, 1):
+            cleaned_p = self._clean_text(page_content)
+            pages_metadata.append({"page": idx, "text": cleaned_p})
+            cleaned_pages.append(f"--- PAGE {idx} ---\n{cleaned_p}")
+
+        clean_text = "\n\n".join(cleaned_pages)
 
         # -------------------------------------------------------------------
         # Step 5: Financial terminology validation
@@ -306,6 +334,7 @@ class DocumentIngestionAgent:
             print("[VALIDATE] Document rejected: no financial terms detected.")
             return {
                 "text": "",
+                "pages": [],
                 "tables_count": 0,
                 "error": (
                     "Document rejected: The document does not contain required "
@@ -325,7 +354,7 @@ class DocumentIngestionAgent:
         except Exception:
             tables_count = 0
 
-        return {"text": clean_text, "tables_count": tables_count}
+        return {"text": clean_text, "pages": pages_metadata, "tables_count": tables_count}
 
     # ---------------------------------------------------------------------------
     # Text Preprocessing Helpers
@@ -431,21 +460,28 @@ class DocumentIngestionAgent:
             - EPFO/ESIC defaults
 
             CRITICAL: Focus on HARD FINANCIAL DATA. 
-            - Extract the balance sheet value:
-            - total_revenue
-             -total_debt
-             -shareholder_equity
-             -current_assets
-             -current_liabilities
+            - Extract the balance sheet values:
+              * total_revenue
+              * total_debt
+              * shareholder_equity
+              * current_assets
+              * current_liabilities
+
+            - SOURCE TRACEABILITY (Citations):
+              For each of the main extracted metrics (revenue/total_revenue, debt/total_debt, equity/shareholder_equity), you MUST prove exactly where it came from in the document by providing a citation under the "citations" field.
+              Each citation contains:
+              * page: the 1-based page number where the metric was found (identified via the "--- PAGE X ---" headers in the text).
+              * snippet: the exact supporting text snippet containing the value (e.g. "Revenue from operations: 50 Cr" or "Long-term borrowings: 20 Cr").
+              If a metric is missing/not found, set its citation field to null.
 
             Rules:
 
             - Return all financial values as numeric floats.
-             -Remove commas and currency symbols.
-             -Convert crore/lakh values to INR.
-             -If a value is missing,return null.
-             -Do not return "N/A","-", or empty string.
-             
+              -Remove commas and currency symbols.
+              -Convert crore/lakh values to INR.
+              -If a value is missing,return null.
+              -Do not return "N/A","-", or empty string.
+              
               Identify Balance Sheet items: shareholder_equity, total assets/liabilities.
             - UNIT CONVERSION (MANDATORY): Return financial values as FOUND (e.g. '62 Cr', '120000000').
               * 1 Crore = 10,000,000
@@ -470,13 +506,100 @@ class DocumentIngestionAgent:
                 "qualitative_notes": "string",
                 "financial_commitments": ["string"],
                 "legal_risks": ["string"],
-                "sanction_details": ["string"]
+                "sanction_details": ["string"],
+                "citations": {{
+                    "revenue": {{
+                        "page": int,
+                        "snippet": "string"
+                    }} or null,
+                    "debt": {{
+                        "page": int,
+                        "snippet": "string"
+                    }} or null,
+                    "equity": {{
+                        "page": int,
+                        "snippet": "string"
+                    }} or null,
+                    "total_revenue": {{
+                        "page": int,
+                        "snippet": "string"
+                    }} or null,
+                    "total_debt": {{
+                        "page": int,
+                        "snippet": "string"
+                    }} or null,
+                    "shareholder_equity": {{
+                        "page": int,
+                        "snippet": "string"
+                    }} or null
+                }}
             }}"""),
             ("user", "{text}")
         ])
 
         # Limit text to avoid token overflow
         truncated_text = raw_text[:30000]
+
+        # Helper to clean citations
+        def _clean_citations(citations_data: Any) -> dict:
+            default_citations = {
+                "revenue": None,
+                "debt": None,
+                "equity": None,
+                "total_revenue": None,
+                "total_debt": None,
+                "shareholder_equity": None
+            }
+            if not citations_data:
+                return default_citations
+            if not isinstance(citations_data, dict):
+                try:
+                    citations_data = citations_data.model_dump()
+                except AttributeError:
+                    try:
+                        citations_data = dict(citations_data)
+                    except Exception:
+                        return default_citations
+            cleaned = default_citations.copy()
+            mapping = [
+                ("revenue", "total_revenue"),
+                ("debt", "total_debt"),
+                ("equity", "shareholder_equity")
+            ]
+            for k1, k2 in mapping:
+                # Use explicit None check — avoids treating page:0 or empty-snippet as falsy
+                v1 = citations_data.get(k1)
+                v2 = citations_data.get(k2)
+                raw_detail = v1 if v1 is not None else v2
+                if not raw_detail:
+                    continue
+                detail_dict = {}
+                if isinstance(raw_detail, dict):
+                    detail_dict = raw_detail
+                else:
+                    try:
+                        detail_dict = raw_detail.model_dump()
+                    except AttributeError:
+                        try:
+                            detail_dict = dict(raw_detail)
+                        except Exception:
+                            continue
+                page = detail_dict.get("page")
+                snippet = detail_dict.get("snippet")
+                try:
+                    if page is not None:
+                        page = int(page)
+                except (ValueError, TypeError):
+                    page = None
+                if snippet is not None:
+                    snippet = str(snippet)
+                citation_entry = {
+                    "page": page,
+                    "snippet": snippet
+                }
+                cleaned[k1] = citation_entry
+                cleaned[k2] = citation_entry
+            return cleaned
 
         # Attempt 1: Structured output
         if self.structured_llm:
@@ -489,7 +612,8 @@ class DocumentIngestionAgent:
                 fin_fields = ["total_revenue", "total_debt", "shareholder_equity", "current_assets", "current_liabilities"]
                 for field in fin_fields:
                     parsed[field] = normalize_to_inr(parsed.get(field))
-                    
+                
+                parsed["citations"] = _clean_citations(parsed.get("citations"))
                 return parsed
             except Exception as e:
                 print(f"[PARSE] Structured output failed: {e}")
@@ -516,6 +640,7 @@ class DocumentIngestionAgent:
             except (ValueError, TypeError):
                 parsed["base_score"] = 65
 
+            parsed["citations"] = _clean_citations(parsed.get("citations"))
             return parsed
         except Exception as e2:
             print(f"[PARSE] Raw fallback failed: {e2}")
