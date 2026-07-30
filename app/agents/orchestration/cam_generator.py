@@ -12,13 +12,22 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
 
+class Citation(BaseModel):
+    id: int = Field(description="Unique integer ID for the citation, matching the bracketed inline marker (e.g. [1]).")
+    snippet: str = Field(description="Exact excerpt from the provided text.")
+    page: int = Field(description="Page number where the snippet was found.")
+
+class MetricWithCitation(BaseModel):
+    text: str = Field(description="The analytical text containing inline citation markers like [1].")
+    citations: List[Citation] = Field(default_factory=list, description="List of citations backing up the analysis")
+
 # 1. Define the Five Cs Structure
 class FiveCs(BaseModel):
-    character: str = Field(description="Analysis of management integrity, litigation history, and market reputation.")
-    capacity: str = Field(description="Analysis of repayment capacity, cash flows, and GST vs Bank consistency.")
-    capital: str = Field(description="Analysis of net worth and existing financial commitments.")
-    collateral: str = Field(description="Analysis of available security (note if unsecured).")
-    conditions: str = Field(description="Analysis of macroeconomic factors and sector headwinds.")
+    character: MetricWithCitation = Field(description="Analysis of management integrity, litigation history, and market reputation.")
+    capacity: MetricWithCitation = Field(description="Analysis of repayment capacity, cash flows, and GST vs Bank consistency.")
+    capital: MetricWithCitation = Field(description="Analysis of net worth and existing financial commitments.")
+    collateral: MetricWithCitation = Field(description="Analysis of available security (note if unsecured).")
+    conditions: MetricWithCitation = Field(description="Analysis of macroeconomic factors and sector headwinds.")
 
 # 2. Define the Final CAM Structure
 class CreditAppraisalMemo(BaseModel):
@@ -55,11 +64,11 @@ class CAMGeneratorAgent:
             
             {{
                 "five_cs": {{
-                    "character": "analysis...",
-                    "capacity": "analysis...",
-                    "capital": "analysis...",
-                    "collateral": "analysis...",
-                    "conditions": "analysis..."
+                    "character": {{"text": "analysis with [1]...", "citations": [{{"id": 1, "snippet": "...", "page": 1}}]}},
+                    "capacity": {{"text": "analysis...", "citations": []}},
+                    "capital": {{"text": "analysis...", "citations": []}},
+                    "collateral": {{"text": "analysis...", "citations": []}},
+                    "conditions": {{"text": "analysis...", "citations": []}}
                 }},
                 "decision": "APPROVE, MANUAL REVIEW, or REJECT",
                 "recommended_loan_amount": "Amount or 'Withheld pending review'",
@@ -103,7 +112,7 @@ class CAMGeneratorAgent:
         except Exception as e:
             print(f"[CAM ERROR] {e}")
             return {
-                "five_cs": {k: "Manual review required due to system error." for k in ["character", "capacity", "capital", "collateral", "conditions"]},
+                "five_cs": {k: {"text": "Manual review required due to system error.", "citations": []} for k in ["character", "capacity", "capital", "collateral", "conditions"]},
                 "decision": "MANUAL REVIEW",
                 "recommended_loan_amount": "Withheld",
                 "recommended_interest_rate": "TBD",
