@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, patch
-from app.agents.orchestration.cam_generator import CAMGeneratorAgent, CreditAppraisalMemo, FiveCs
+from app.agents.orchestration.cam_generator import CAMGeneratorAgent, CreditAppraisalMemo, FiveCs, MetricWithCitation
 
 @pytest.fixture
 def cam_agent():
@@ -23,13 +23,15 @@ def test_prompt_contains_strict_threshold(cam_agent):
 async def test_generate_cam_pipeline_success(cam_agent):
     """Validate that the pipeline processes inputs correctly (mocking the LLM)."""
     
+    metric_mock = MetricWithCitation(text="Good", citations=[])
+    
     mock_cam = CreditAppraisalMemo(
         five_cs=FiveCs(
-            character="Good",
-            capacity="Good",
-            capital="Good",
-            collateral="Good",
-            conditions="Good"
+            character=metric_mock,
+            capacity=metric_mock,
+            capital=metric_mock,
+            collateral=metric_mock,
+            conditions=metric_mock
         ),
         decision="REJECT",
         recommended_loan_amount="0",
