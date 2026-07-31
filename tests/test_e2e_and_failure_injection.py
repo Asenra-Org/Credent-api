@@ -203,7 +203,7 @@ async def test_llm_timeout_triggers_local_heuristic_fallback():
         })
         
         assert result["status"] == "success"
-        assert result["combined_decision"]["decision"] == "APPROVE"
+        assert result["combined_decision"]["decision"] == "MANUAL REVIEW"
         assert "fallback" in result["combined_decision"]["decision_rationale"].lower()
 
 def test_sqlite_wal_and_busy_timeout_pragmas():

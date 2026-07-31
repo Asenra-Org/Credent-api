@@ -206,3 +206,220 @@ async def test_generate_explanation_empty_evidence(coordinator_instance):
     """Verify empty evidence list immediately returns manual review recommendation."""
     explanation = await coordinator_instance.generate_explanation([])
     assert "No credit appraisal evidence was provided" in explanation
+
+
+# =============================================================================
+# ASE-36 [QA-W4] — run_appraisal() Integration Tests
+# Added by: Sarvesh Gajakosh (QA)
+# =============================================================================
+"""
+The tests above (by Shlok) cover build_evidence_trail() and
+generate_explanation() thoroughly. This section adds coverage for
+run_appraisal() itself — the actual multi-agent dispatch pipeline — which
+was the core acceptance criteria for ASE-36: "verify that all sub-agents
+are called during run_appraisal."
+
+Requires GROQ_API_KEY to be set (even a dummy value) in the environment,
+since CAMGeneratorAgent's constructor calls ChatGroq() with no fallback
+default and will raise on import otherwise — see flagged issue in PR notes.
+"""
+
+import os
+from datetime import datetime
+
+
+def _mocked_coordinator():
+    """Builds an AgentCoordinator with every sub-agent replaced by AsyncMocks
+    returning healthy, realistic default responses. Individual tests override
+    only the specific mock they care about."""
+    coordinator = AgentCoordinator()
+
+    coordinator.ingestion_agent = MagicMock()
+    coordinator.ingestion_agent.ingest_pdf = AsyncMock(
+        return_value={"text": "Sample extracted financial statement text." * 3}
+    )
+    coordinator.ingestion_agent.parse_financial_statement = AsyncMock(
+        return_value={"company_name": "Integration Test Co", "sector": "Manufacturing"}
+    )
+
+    coordinator.financial_agent = MagicMock()
+    coordinator.financial_agent.analyze = AsyncMock(
+        return_value={"status": "success", "financial_health_score": 80.0}
+    )
+
+    coordinator.management_agent = MagicMock()
+    coordinator.management_agent.analyze = AsyncMock(
+        return_value={"status": "success", "management_score": 75.0}
+    )
+
+    coordinator.sector_agent = MagicMock()
+    coordinator.sector_agent.get_sector_outlook = AsyncMock(
+        return_value={"status": "success", "sector": "Manufacturing", "outlook": "Stable", "risk_factors": []}
+    )
+    coordinator.sector_agent.check_rbi_policies = AsyncMock(return_value=[])
+
+    coordinator.integrity_agent = MagicMock()
+    coordinator.integrity_agent.cross_validate = AsyncMock(
+        return_value={"status": "completed", "flags": [], "warnings": []}
+    )
+
+    coordinator.cam_agent = MagicMock()
+    coordinator.cam_agent.generate_cam = AsyncMock(
+        return_value={
+            "five_cs": {"character": "Good", "capacity": "Good", "capital": "Good", "collateral": "Good", "conditions": "Good"},
+            "decision": "APPROVE",
+            "recommended_loan_amount": "INR 50,00,000",
+            "recommended_interest_rate": "12.5%",
+            "decision_rationale": "Strong financials across all metrics.",
+        }
+    )
+
+    return coordinator
+
+
+class TestRunAppraisalInputValidation:
+
+    async def test_non_dict_application_data_raises_value_error(self):
+        coordinator = _mocked_coordinator()
+        with pytest.raises(ValueError, match="must be a dictionary"):
+            await coordinator.run_appraisal("not a dict")
+
+    async def test_missing_file_path_raises_value_error(self):
+        coordinator = _mocked_coordinator()
+        with pytest.raises(ValueError, match="file_path"):
+            await coordinator.run_appraisal({})
+
+    async def test_nonexistent_file_path_raises_value_error(self):
+        coordinator = _mocked_coordinator()
+        with patch("os.path.exists", return_value=False):
+            with pytest.raises(ValueError, match="File not found"):
+                await coordinator.run_appraisal({"file_path": "does_not_exist.pdf"})
+
+
+class TestRunAppraisalDispatch:
+    """Core ASE-36 acceptance criteria: all sub-agents must be called."""
+
+    async def test_all_five_sub_agents_are_called(self):
+        coordinator = _mocked_coordinator()
+        with patch("os.path.exists", return_value=True):
+            result = await coordinator.run_appraisal({"file_path": "fake.pdf"})
+
+        coordinator.ingestion_agent.ingest_pdf.assert_called_once()
+        coordinator.ingestion_agent.parse_financial_statement.assert_called_once()
+        coordinator.financial_agent.analyze.assert_called_once()
+        coordinator.management_agent.analyze.assert_called_once()
+        coordinator.sector_agent.get_sector_outlook.assert_called_once()
+        coordinator.sector_agent.check_rbi_policies.assert_called_once()
+        coordinator.integrity_agent.cross_validate.assert_called_once()
+        coordinator.cam_agent.generate_cam.assert_called_once()
+
+        assert result["status"] == "success"
+        assert set(result["individual_agent_outputs"].keys()) == {
+            "ingestion", "financial_health", "management_quality", "sector_context", "integrity_check"
+        }
+
+    async def test_result_contains_appraisal_id_evidence_and_explanation(self):
+        coordinator = _mocked_coordinator()
+        with patch("os.path.exists", return_value=True):
+            result = await coordinator.run_appraisal({"file_path": "fake.pdf"})
+
+        assert result["appraisal_id"].startswith("APPRAISAL_")
+        assert "evidence_trail" in result
+        assert "explanation" in result
+        assert "combined_decision" in result
+        assert result["combined_decision"]["decision"] == "APPROVE"
+
+    async def test_ingestion_failure_is_fail_fast_not_graceful(self):
+        """
+        Unlike the four downstream analysis agents, ingestion is NOT wrapped in
+        a fallback — a failed ingestion aborts the whole appraisal immediately.
+        This is intentional (no financial data = nothing to appraise), but
+        worth locking in with a test so it can't silently change later.
+        """
+        coordinator = _mocked_coordinator()
+        coordinator.ingestion_agent.ingest_pdf = AsyncMock(return_value={"error": "Corrupted PDF"})
+
+        with patch("os.path.exists", return_value=True):
+            with pytest.raises(ValueError, match="Ingestion"):
+                await coordinator.run_appraisal({"file_path": "fake.pdf"})
+
+
+class TestRunAppraisalGracefulDegradation:
+    """
+    Downstream analysis agents (financial/management/sector/integrity) are
+    dispatched via asyncio.gather(..., return_exceptions=True) — one agent
+    failing should NOT crash the whole pipeline, it should fall back to
+    documented default values instead.
+    """
+
+    async def test_financial_agent_failure_falls_back_gracefully(self):
+        coordinator = _mocked_coordinator()
+        coordinator.financial_agent.analyze = AsyncMock(side_effect=Exception("Simulated LLM token limit exceeded"))
+
+        with patch("os.path.exists", return_value=True):
+            result = await coordinator.run_appraisal({"file_path": "fake.pdf"})
+
+        assert result["status"] == "success"
+        fin_output = result["individual_agent_outputs"]["financial_health"]
+        assert fin_output["financial_health_score"] == 50.0
+        assert "defaulted due to agent failure" in fin_output["analysis_notes"][0]
+
+    async def test_management_agent_failure_falls_back_gracefully(self):
+        coordinator = _mocked_coordinator()
+        coordinator.management_agent.analyze = AsyncMock(side_effect=Exception("Simulated timeout"))
+
+        with patch("os.path.exists", return_value=True):
+            result = await coordinator.run_appraisal({"file_path": "fake.pdf"})
+
+        assert result["status"] == "success"
+        mgt_output = result["individual_agent_outputs"]["management_quality"]
+        assert mgt_output["management_score"] == 0.0
+        assert mgt_output["risk_level"] == "Undetermined"
+
+    async def test_all_four_downstream_agents_failing_still_returns_success(self):
+        """Worst case: every downstream analysis agent fails. Pipeline should
+        still complete via fallbacks, not crash entirely."""
+        coordinator = _mocked_coordinator()
+        coordinator.financial_agent.analyze = AsyncMock(side_effect=Exception("fail"))
+        coordinator.management_agent.analyze = AsyncMock(side_effect=Exception("fail"))
+        coordinator.sector_agent.get_sector_outlook = AsyncMock(side_effect=Exception("fail"))
+        coordinator.integrity_agent.cross_validate = AsyncMock(side_effect=Exception("fail"))
+
+        with patch("os.path.exists", return_value=True):
+            result = await coordinator.run_appraisal({"file_path": "fake.pdf"})
+
+        assert result["status"] == "success"
+        assert result["combined_decision"] is not None
+
+
+class TestRunAppraisalCamFallback:
+    """
+    Updated after Tanisha's ASE-34 fallback fix (PR #25): coordinator.py now
+    consistently returns MANUAL REVIEW on a CAM Generator failure, matching
+    cam_generator.py's own internal handler. Previously these two layers
+    contradicted each other (flagged by QA) — this is now fixed and locked in.
+    """
+
+    async def test_cam_failure_defaults_to_manual_review_regardless_of_score(self):
+        coordinator = _mocked_coordinator()
+        coordinator.financial_agent.analyze = AsyncMock(
+            return_value={"status": "success", "financial_health_score": 80.0}
+        )
+        coordinator.cam_agent.generate_cam = AsyncMock(side_effect=Exception("Simulated CAM LLM failure"))
+
+        with patch("os.path.exists", return_value=True):
+            result = await coordinator.run_appraisal({"file_path": "fake.pdf"})
+
+        assert result["combined_decision"]["decision"] == "MANUAL REVIEW"
+
+    async def test_cam_failure_with_low_score_also_defaults_to_manual_review(self):
+        coordinator = _mocked_coordinator()
+        coordinator.financial_agent.analyze = AsyncMock(
+            return_value={"status": "success", "financial_health_score": 40.0}
+        )
+        coordinator.cam_agent.generate_cam = AsyncMock(side_effect=Exception("Simulated CAM LLM failure"))
+
+        with patch("os.path.exists", return_value=True):
+            result = await coordinator.run_appraisal({"file_path": "fake.pdf"})
+
+        assert result["combined_decision"]["decision"] == "MANUAL REVIEW"

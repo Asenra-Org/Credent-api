@@ -229,3 +229,32 @@ async def test_run_appraisal_return_exceptions_gather_verification(mock_exists, 
         await coordinator_instance.run_appraisal({"file_path": "statement.pdf"})
         called_args, called_kwargs = mock_gather.call_args
         assert called_kwargs.get("return_exceptions") is True
+
+@pytest.mark.parametrize('score, exception_type', [
+    (50, RuntimeError('LLM Timeout')),
+    (45, ValueError('JSON parsing failure')),
+    (90, Exception('API timeout'))
+])
+@patch('app.agents.orchestration.coordinator.os.path.exists', return_value=True)
+async def test_run_appraisal_cam_generation_infrastructure_failures(mock_exists, coordinator_instance, score, exception_type):
+    """Verify that any infrastructure failure during CAM generation results in a strict MANUAL REVIEW fallback with withheld recommendations, regardless of the score."""
+    coordinator_instance.ingestion_agent.ingest_pdf.return_value = {'text': 'Valid text'}
+    coordinator_instance.ingestion_agent.parse_financial_statement.return_value = {'company_name': 'Corp'}
+    coordinator_instance.financial_agent.analyze.return_value = {'financial_health_score': score}
+    coordinator_instance.management_agent.analyze.return_value = {}
+    coordinator_instance.sector_agent.get_sector_outlook.return_value = {}
+    coordinator_instance.sector_agent.check_rbi_policies.return_value = []
+    coordinator_instance.integrity_agent.cross_validate.return_value = {}
+    
+    # Simulate infrastructure failure
+    coordinator_instance.cam_agent.generate_cam.side_effect = exception_type
+    coordinator_instance.generate_explanation = AsyncMock(return_value='Rationale')
+
+    result = await coordinator_instance.run_appraisal({'file_path': 'test_statement.pdf'})
+    
+    assert result['status'] == 'success'
+    combined = result['combined_decision']
+    assert combined['decision'] == 'MANUAL REVIEW'
+    assert combined['recommended_loan_amount'] == 'Withheld'
+    assert combined['recommended_interest_rate'] == 'Withheld'
+    assert 'Underwriting could not be completed' in combined['decision_rationale']

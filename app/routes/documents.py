@@ -14,6 +14,16 @@ from app.agents.input.document_ingestion import DocumentIngestionAgent
 
 router = APIRouter()
 
+# ---------------------------------------------------------------------------
+# Forensics Penalty — AI-A-W4
+# Deduct exactly this many points from base_score when document tampering
+# is detected by the pikepdf forensics layer.
+# Declared as a module-level constant so it can be imported and asserted
+# in tests without magic numbers, and adjusted by risk policy without
+# touching business logic.
+# ---------------------------------------------------------------------------
+FORENSICS_PENALTY: int = 15
+
 def run_pdf_forensics(file_path: str):
     """
     Scans a PDF's metadata to detect potential tampering or unnatural original
@@ -57,6 +67,95 @@ def run_pdf_forensics(file_path: str):
         report["flags"].append("ERROR: Could not verify document integrity")
 
     return report
+
+
+def apply_forensics_penalty(base_score: int, forensics_result: dict) -> dict:
+    """
+    Apply a deterministic credit score penalty when pikepdf forensics detects
+    document tampering (``is_suspicious == True``).
+
+    Design decisions
+    ----------------
+    * **Pure function** — no side effects, no I/O, trivially unit-testable.
+    * **Single application** — the penalty is applied exactly once per call;
+      callers must not call this function twice for the same document.
+    * **Score floor** — the adjusted score is clamped to 0 (never negative).
+    * **Defensive** — every failure mode returns the original score unchanged;
+      the system never crashes on bad forensics data.
+
+    Parameters
+    ----------
+    base_score : int
+        The AI-estimated credit score (0–100) produced by
+        ``DocumentIngestionAgent.parse_financial_statement()``.
+    forensics_result : dict
+        The dict returned by ``run_pdf_forensics()``.  Expected shape::
+
+            {
+                "is_suspicious": bool,
+                "flags": [str, ...],
+                "metadata": {"creator": str, "producer": str}
+            }
+
+        All keys are treated as optional — missing or malformed values are
+        handled gracefully.
+
+    Returns
+    -------
+    dict
+        {
+            "original_score"  : int  — base_score before any penalty,
+            "adjusted_score"  : int  — base_score after penalty (>= 0),
+            "penalty_applied" : bool — True only when penalty was deducted,
+            "penalty_points"  : int  — points deducted (0 or FORENSICS_PENALTY),
+        }
+    """
+    # --- 1. Normalise base_score -------------------------------------------
+    # Coerce to int; fall back to 0 on non-numeric input so subsequent
+    # arithmetic never raises TypeError or ValueError.
+    try:
+        safe_score: int = max(0, int(base_score))
+    except (TypeError, ValueError):
+        safe_score = 0
+
+    _no_penalty = {
+        "original_score":  safe_score,
+        "adjusted_score":  safe_score,
+        "penalty_applied": False,
+        "penalty_points":  0,
+    }
+
+    # --- 2. Guard: forensics_result must be a non-empty dict ---------------
+    if not forensics_result or not isinstance(forensics_result, dict):
+        # Missing or completely invalid forensics data — cannot determine
+        # suspicion. Return score unchanged (safe-fail).
+        return _no_penalty
+
+    # --- 3. Extract and validate is_suspicious -----------------------------
+    raw_flag = forensics_result.get("is_suspicious")
+
+    if raw_flag is None:
+        # Key is absent from the dict — treat as not suspicious.
+        return _no_penalty
+
+    try:
+        is_suspicious: bool = bool(raw_flag)
+    except Exception:
+        # Unexpected type that bool() itself cannot handle (extremely rare).
+        return _no_penalty
+
+    # --- 4. Apply penalty (once, with floor at 0) --------------------------
+    if not is_suspicious:
+        return _no_penalty
+
+    adjusted: int = max(0, safe_score - FORENSICS_PENALTY)
+
+    return {
+        "original_score":  safe_score,
+        "adjusted_score":  adjusted,
+        "penalty_applied": True,
+        "penalty_points":  FORENSICS_PENALTY,
+    }
 
 # Lazy init — catch import/init errors
 try:
@@ -111,25 +210,50 @@ async def ingest_pdf_document(file: UploadFile = File(...), institution_id: str 
         forensics = run_pdf_forensics(temp_file_path)
 
         # 2. Trigger Full Orchestrator Multi-Agent Appraisal Pipeline (ADR-006)
-        coordinator = AgentCoordinator()
+        coordinator = AgentCoordinator(ingestion_agent=agent)
         appraisal_result = await coordinator.run_appraisal({
             "file_path": temp_file_path,
             "institution_id": institution_id
         })
 
         if isinstance(appraisal_result, dict):
-            appraisal_result["forensics"] = forensics
+            ingestion_data = appraisal_result.get("individual_agent_outputs", {}).get("ingestion", {})
+            financial_data = appraisal_result.get("individual_agent_outputs", {}).get("financial_health", {})
             
+            # Base score resolution: prefer ingestion_data.base_score, fallback to financial_health_score
+            raw_base_score = ingestion_data.get("base_score") if isinstance(ingestion_data, dict) else None
+            base_score = raw_base_score if raw_base_score is not None else financial_data.get("financial_health_score", 50)
+
+            # Apply forensics penalty (AI-A-W4) from origin/main
+            forensics_penalty = apply_forensics_penalty(
+                base_score=base_score,
+                forensics_result=forensics,
+            )
+
+            # If penalty applied or score adjusted, set adjusted_score on ingestion and financial outputs
+            adjusted = forensics_penalty.get("adjusted_score", base_score)
+            if isinstance(financial_data, dict):
+                financial_data["financial_health_score"] = adjusted
+            if isinstance(ingestion_data, dict):
+                ingestion_data["base_score"] = adjusted
+
+            # Attach backwards-compatible top-level keys for legacy callers & tests
+            appraisal_result["forensics"] = forensics
+            appraisal_result["forensics_penalty"] = forensics_penalty
+            appraisal_result["filename"] = safe_filename
+            appraisal_result["tables_found"] = ingestion_data.get("tables_count", 0)
+            appraisal_result["ai_analysis"] = ingestion_data
+
             # 3. Save appraisal results to Supabase (Primary) and SQLite (Fallback)
             try:
                 save_appraisal({
                     "company_id": f"COMP_{int(datetime.now().timestamp())}",
-                    "company_name": appraisal_result.get("individual_agent_outputs", {}).get("ingestion", {}).get("company_name", "Unknown Entity"),
+                    "company_name": ingestion_data.get("company_name", "Unknown Entity"),
                     "sector": appraisal_result.get("individual_agent_outputs", {}).get("sector_context", {}).get("sector", "N/A"),
-                    "revenue": appraisal_result.get("individual_agent_outputs", {}).get("financial_health", {}).get("metrics", {}).get("revenue", 0.0),
-                    "debt": appraisal_result.get("individual_agent_outputs", {}).get("financial_health", {}).get("metrics", {}).get("total_debt", 0.0),
-                    "base_score": appraisal_result.get("individual_agent_outputs", {}).get("financial_health", {}).get("financial_health_score", 50),
-                    "adjusted_score": appraisal_result.get("individual_agent_outputs", {}).get("financial_health", {}).get("financial_health_score", 50),
+                    "revenue": financial_data.get("metrics", {}).get("revenue", 0.0),
+                    "debt": financial_data.get("metrics", {}).get("total_debt", 0.0),
+                    "base_score": base_score,
+                    "adjusted_score": forensics_penalty.get("adjusted_score", base_score),
                     "decision": appraisal_result.get("combined_decision", {}).get("decision", "PENDING"),
                     "recommended_loan_amount": appraisal_result.get("combined_decision", {}).get("recommended_loan_amount", "0"),
                     "recommended_interest_rate": appraisal_result.get("combined_decision", {}).get("recommended_interest_rate", "N/A"),
@@ -137,8 +261,8 @@ async def ingest_pdf_document(file: UploadFile = File(...), institution_id: str 
                     "cam_report": appraisal_result.get("combined_decision", {}),
                     "web_research": {},
                     "integrity_flags": appraisal_result.get("individual_agent_outputs", {}).get("integrity_check", {}),
-                    "raw_document_data": appraisal_result.get("individual_agent_outputs", {}).get("ingestion", {}),
-                    "financial_ratios": appraisal_result.get("individual_agent_outputs", {}).get("financial_health", {}).get("ratios", {}),
+                    "raw_document_data": ingestion_data,
+                    "financial_ratios": financial_data.get("ratios", {}),
                     "management_score": appraisal_result.get("individual_agent_outputs", {}).get("management_quality", {}).get("management_score", 0.0),
                     "promoter_analysis": appraisal_result.get("individual_agent_outputs", {}).get("management_quality", {}).get("promoter_analysis", []),
                     "governance_assessment": appraisal_result.get("individual_agent_outputs", {}).get("management_quality", {}).get("governance_assessment", {}),

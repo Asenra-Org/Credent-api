@@ -66,14 +66,22 @@ class AgentCoordinator:
     5. Triggers the output layer (CAM, scoring, pricing)
     """
 
-    def __init__(self):
-        # Set up agent instances
-        self.ingestion_agent = DocumentIngestionAgent()
-        self.financial_agent = FinancialHealthAgent()
-        self.management_agent = ManagementQualityAgent()
-        self.sector_agent = SectorContextAgent()
-        self.integrity_agent = IntegrityVerificationAgent()
-        self.cam_agent = CAMGeneratorAgent()
+    def __init__(
+        self,
+        ingestion_agent=None,
+        financial_agent=None,
+        management_agent=None,
+        sector_agent=None,
+        integrity_agent=None,
+        cam_agent=None
+    ):
+        # Set up agent instances with explicit non-None dependency injection
+        self.ingestion_agent = ingestion_agent if ingestion_agent is not None else DocumentIngestionAgent()
+        self.financial_agent = financial_agent if financial_agent is not None else FinancialHealthAgent()
+        self.management_agent = management_agent if management_agent is not None else ManagementQualityAgent()
+        self.sector_agent = sector_agent if sector_agent is not None else SectorContextAgent()
+        self.integrity_agent = integrity_agent if integrity_agent is not None else IntegrityVerificationAgent()
+        self.cam_agent = cam_agent if cam_agent is not None else CAMGeneratorAgent()
 
         # Initialize LLM for narrative explanation generation
         api_key = os.getenv("GROQ_API_KEY")
@@ -113,7 +121,7 @@ class AgentCoordinator:
         # Stage 2: Sequential Ingestion (Fail-Fast)
         try:
             ingestion_result = await self.ingestion_agent.ingest_pdf(file_path)
-            if not ingestion_result or ingestion_result.get("error"):
+            if not ingestion_result or (isinstance(ingestion_result, dict) and isinstance(ingestion_result.get("error"), str) and ingestion_result.get("error")):
                 err_msg = ingestion_result.get("error", "Unknown ingestion error.")
                 logger.error("Mandatory ingestion step failed: %s", err_msg)
                 raise ValueError(f"Ingestion failed: {err_msg}")
@@ -291,15 +299,13 @@ class AgentCoordinator:
             )
         except Exception as cam_exc:
             logger.warning("Decision engine failed: %s. Triggering fallback decision mapping.", str(cam_exc))
-            auto_app = policy.get("auto_approve_cutoff", 60.0)
-            auto_rej = policy.get("auto_reject_cutoff", 40.0)
-            decision = "APPROVE" if score >= auto_app else ("REJECT" if score <= auto_rej else "MANUAL")
+            decision = "MANUAL REVIEW"
             cam_result = {
                 "five_cs": {k: "Manual review required due to system error." for k in ["character", "capacity", "capital", "collateral", "conditions"]},
                 "decision": decision,
-                "recommended_loan_amount": "Manual Assessment Required" if decision == "APPROVE" else "0",
-                "recommended_interest_rate": "Manual Assessment Required" if decision == "APPROVE" else "N/A",
-                "decision_rationale": f"CAM Generator failed. Score: {score}/100. Local decision fallback triggered. Manual review recommended."
+                "recommended_loan_amount": "Withheld",
+                "recommended_interest_rate": "Withheld",
+                "decision_rationale": "Underwriting could not be completed because CAM generation failed due to timeout. Triggering fallback decision."
             }
 
         appraisal_id = f"APPRAISAL_{int(datetime.now().timestamp())}"
@@ -679,4 +685,3 @@ class AgentCoordinator:
             "have been logged to the audit evidence trail. Please review the detailed evidence "
             "trail below to determine final loan eligibility."
         )
-
