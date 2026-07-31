@@ -11,7 +11,7 @@ from text_processing import CreditKeywordMatcher, extract_keywords
 class TestCreditKeywordMatcher(unittest.TestCase):
 
     def setUp(self):
-        self.matcher =  CreditKeywordMatcher()
+        self.matcher = CreditKeywordMatcher()
 
     def test_single_keyword_detected(self):
         text = "The loan account is currently overdue."
@@ -53,9 +53,6 @@ class TestCreditKeywordMatcher(unittest.TestCase):
         self.assertIn("write-off", result)
 
     def test_multi_word_phrase_keyword(self):
-        text = "This was classified as a non-performing asset by the bank."
-        result = self.matcher.extract_keywords(text.replace("non-performing asset", "non-performing asset"))
-        # phrase keyword check
         text2 = "This was classified as a non-performing asset by the bank."
         result2 = self.matcher.extract_keywords(text2)
         self.assertIn("non-performing asset", result2)

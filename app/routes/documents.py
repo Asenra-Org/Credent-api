@@ -6,6 +6,7 @@
 # =============================================================================
 import os
 import shutil
+import uuid
 import pikepdf
 from datetime import datetime
 from fastapi import APIRouter, UploadFile, File, HTTPException
@@ -71,13 +72,12 @@ os.makedirs("temp_uploads", exist_ok=True)
 MAX_FILE_SIZE = 20 * 1024 * 1024
 
 
-@router.post("/ingest/pdf")
-async def ingest_pdf_document(file: UploadFile = File(...)):
-    """Upload a PDF document, extract text, and run AI risk extraction."""
+from app.agents.orchestration.coordinator import AgentCoordinator
+from app.database.database import save_appraisal
 
-    # Validate agent is available
-    if agent is None:
-        raise HTTPException(status_code=503, detail="Document ingestion service is not available. Check server logs.")
+@router.post("/ingest/pdf")
+async def ingest_pdf_document(file: UploadFile = File(...), institution_id: str = "DEFAULT"):
+    """Upload a PDF document, trigger full multi-agent credit appraisal, and persist record."""
 
     # Validate filename
     if not file.filename:
@@ -91,7 +91,9 @@ async def ingest_pdf_document(file: UploadFile = File(...)):
     if not safe_filename:
         safe_filename = "uploaded_document.pdf"
 
-    temp_file_path = f"temp_uploads/{safe_filename}"
+    file_uuid = uuid.uuid4().hex
+    unique_filename = f"{file_uuid}_{safe_filename}"
+    temp_file_path = os.path.join("temp_uploads", unique_filename)
 
     try:
         # Read and validate file size
@@ -105,34 +107,47 @@ async def ingest_pdf_document(file: UploadFile = File(...)):
         with open(temp_file_path, "wb") as buffer:
             buffer.write(content)
 
-        # 1. Run Integrity Scan (Forensics) - NEW Enterprise Security Layer
+        # 1. Run Integrity Scan (Forensics)
         forensics = run_pdf_forensics(temp_file_path)
 
-        # 2. Extract raw text using the agent
-        extraction_result = await agent.ingest_pdf(temp_file_path)
+        # 2. Trigger Full Orchestrator Multi-Agent Appraisal Pipeline (ADR-006)
+        coordinator = AgentCoordinator()
+        appraisal_result = await coordinator.run_appraisal({
+            "file_path": temp_file_path,
+            "institution_id": institution_id
+        })
 
-        # Check if extraction had errors
-        if extraction_result.get("error"):
-            raise HTTPException(status_code=422, detail=extraction_result["error"])
+        if isinstance(appraisal_result, dict):
+            appraisal_result["forensics"] = forensics
+            
+            # 3. Save appraisal results to Supabase (Primary) and SQLite (Fallback)
+            try:
+                save_appraisal({
+                    "company_id": f"COMP_{int(datetime.now().timestamp())}",
+                    "company_name": appraisal_result.get("individual_agent_outputs", {}).get("ingestion", {}).get("company_name", "Unknown Entity"),
+                    "sector": appraisal_result.get("individual_agent_outputs", {}).get("sector_context", {}).get("sector", "N/A"),
+                    "revenue": appraisal_result.get("individual_agent_outputs", {}).get("financial_health", {}).get("metrics", {}).get("revenue", 0.0),
+                    "debt": appraisal_result.get("individual_agent_outputs", {}).get("financial_health", {}).get("metrics", {}).get("total_debt", 0.0),
+                    "base_score": appraisal_result.get("individual_agent_outputs", {}).get("financial_health", {}).get("financial_health_score", 50),
+                    "adjusted_score": appraisal_result.get("individual_agent_outputs", {}).get("financial_health", {}).get("financial_health_score", 50),
+                    "decision": appraisal_result.get("combined_decision", {}).get("decision", "PENDING"),
+                    "recommended_loan_amount": appraisal_result.get("combined_decision", {}).get("recommended_loan_amount", "0"),
+                    "recommended_interest_rate": appraisal_result.get("combined_decision", {}).get("recommended_interest_rate", "N/A"),
+                    "decision_rationale": appraisal_result.get("combined_decision", {}).get("decision_rationale", ""),
+                    "cam_report": appraisal_result.get("combined_decision", {}),
+                    "web_research": {},
+                    "integrity_flags": appraisal_result.get("individual_agent_outputs", {}).get("integrity_check", {}),
+                    "raw_document_data": appraisal_result.get("individual_agent_outputs", {}).get("ingestion", {}),
+                    "financial_ratios": appraisal_result.get("individual_agent_outputs", {}).get("financial_health", {}).get("ratios", {}),
+                    "management_score": appraisal_result.get("individual_agent_outputs", {}).get("management_quality", {}).get("management_score", 0.0),
+                    "promoter_analysis": appraisal_result.get("individual_agent_outputs", {}).get("management_quality", {}).get("promoter_analysis", []),
+                    "governance_assessment": appraisal_result.get("individual_agent_outputs", {}).get("management_quality", {}).get("governance_assessment", {}),
+                    "institution_id": institution_id
+                })
+            except Exception as save_err:
+                print(f"[ROUTE /ingest/pdf] Persistence error: {save_err}")
 
-        raw_text = extraction_result.get("text", "")
-
-        if not raw_text or len(raw_text.strip()) < 10:
-            raise HTTPException(status_code=422, detail="No readable text could be extracted from this PDF. Try a clearer document.")
-
-        # 3. Run LLM parsing
-        ai_analysis = await agent.parse_financial_statement(raw_text)
-
-        appraisal_id = f"APPRAISAL_{int(datetime.now().timestamp())}"
-
-        return {
-            "status": "success",
-            "appraisal_id": appraisal_id,
-            "filename": safe_filename,
-            "tables_found": extraction_result.get("tables_count", 0),
-            "forensics": forensics,
-            "ai_analysis": ai_analysis
-        }
+        return appraisal_result
 
     except HTTPException:
         raise  # Re-raise HTTP exceptions as-is
