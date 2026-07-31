@@ -18,6 +18,7 @@ from app.agents.analysis.management_quality import ManagementQualityAgent
 from app.agents.analysis.sector_context import SectorContextAgent
 from app.agents.analysis.integrity_verification import IntegrityVerificationAgent
 from app.agents.orchestration.cam_generator import CAMGeneratorAgent
+from app.database.database import get_policy
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +28,27 @@ AGENT_TIMEOUT_SECONDS = 15.0
 # Timeout threshold for explanation generation
 EXPLANATION_TIMEOUT_SECONDS = 10.0
 
-# Business Thresholds for credit health evaluations
-THRESHOLD_CURRENT_RATIO_SAFE = 1.2
-THRESHOLD_CURRENT_RATIO_MIN = 1.0
-THRESHOLD_DSCR_SAFE = 1.25
-THRESHOLD_DSCR_MIN = 1.0
-THRESHOLD_DE_HIGH = 2.0
+# Safe Default Policy Configuration (Fallback)
+DEFAULT_POLICY = {
+    "current_ratio_safe": 1.2,
+    "current_ratio_min": 1.0,
+    "dscr_safe": 1.25,
+    "dscr_min": 1.0,
+    "de_high": 2.0,
+    "auto_approve_cutoff": 60.0,
+    "auto_reject_cutoff": 40.0,
+    "penalty_weights": {
+        "integrity_mismatch": 15.0,
+        "promoter_flags": 10.0
+    }
+}
+
+# Backward compatibility threshold fallbacks
+THRESHOLD_CURRENT_RATIO_SAFE = DEFAULT_POLICY["current_ratio_safe"]
+THRESHOLD_CURRENT_RATIO_MIN = DEFAULT_POLICY["current_ratio_min"]
+THRESHOLD_DSCR_SAFE = DEFAULT_POLICY["dscr_safe"]
+THRESHOLD_DSCR_MIN = DEFAULT_POLICY["dscr_min"]
+THRESHOLD_DE_HIGH = DEFAULT_POLICY["de_high"]
 
 # Recommendation templates
 REC_CURRENT_RATIO = "Assess the working capital cycle and evaluate short-term liabilities."
@@ -50,14 +66,22 @@ class AgentCoordinator:
     5. Triggers the output layer (CAM, scoring, pricing)
     """
 
-    def __init__(self):
-        # Set up agent instances
-        self.ingestion_agent = DocumentIngestionAgent()
-        self.financial_agent = FinancialHealthAgent()
-        self.management_agent = ManagementQualityAgent()
-        self.sector_agent = SectorContextAgent()
-        self.integrity_agent = IntegrityVerificationAgent()
-        self.cam_agent = CAMGeneratorAgent()
+    def __init__(
+        self,
+        ingestion_agent=None,
+        financial_agent=None,
+        management_agent=None,
+        sector_agent=None,
+        integrity_agent=None,
+        cam_agent=None
+    ):
+        # Set up agent instances with explicit non-None dependency injection
+        self.ingestion_agent = ingestion_agent if ingestion_agent is not None else DocumentIngestionAgent()
+        self.financial_agent = financial_agent if financial_agent is not None else FinancialHealthAgent()
+        self.management_agent = management_agent if management_agent is not None else ManagementQualityAgent()
+        self.sector_agent = sector_agent if sector_agent is not None else SectorContextAgent()
+        self.integrity_agent = integrity_agent if integrity_agent is not None else IntegrityVerificationAgent()
+        self.cam_agent = cam_agent if cam_agent is not None else CAMGeneratorAgent()
 
         # Initialize LLM for narrative explanation generation
         api_key = os.getenv("GROQ_API_KEY")
@@ -86,12 +110,18 @@ class AgentCoordinator:
             logger.error("Mandatory validation failed: file_path does not exist on disk.")
             raise ValueError(f"File not found: {file_path}")
 
-        logger.info("Credit appraisal started for document: %s", os.path.basename(file_path))
+        # Stage 1.5: Policy Retrieval
+        institution_id = application_data.get("institution_id", "DEFAULT")
+        try:
+            policy = get_policy(institution_id) or DEFAULT_POLICY
+        except Exception as pol_err:
+            logger.warning("Failed to load policy for %s: %s. Using default policy.", institution_id, pol_err)
+            policy = DEFAULT_POLICY
 
         # Stage 2: Sequential Ingestion (Fail-Fast)
         try:
             ingestion_result = await self.ingestion_agent.ingest_pdf(file_path)
-            if not ingestion_result or ingestion_result.get("error"):
+            if not ingestion_result or (isinstance(ingestion_result, dict) and isinstance(ingestion_result.get("error"), str) and ingestion_result.get("error")):
                 err_msg = ingestion_result.get("error", "Unknown ingestion error.")
                 logger.error("Mandatory ingestion step failed: %s", err_msg)
                 raise ValueError(f"Ingestion failed: {err_msg}")
@@ -233,7 +263,7 @@ class AgentCoordinator:
 
         # Stage 5: Evidence Trail Generation (Graceful Degradation)
         try:
-            evidence_trail = await self.build_evidence_trail(individual_outputs)
+            evidence_trail = await self.build_evidence_trail(individual_outputs, policy)
             logger.debug("Evidence trail generated with %s entries.", len(evidence_trail))
         except Exception as exc:
             logger.error("Evidence trail generation failed: %s. Degrading gracefully with empty trail.", str(exc), exc_info=True)
@@ -275,7 +305,7 @@ class AgentCoordinator:
                 "decision": decision,
                 "recommended_loan_amount": "Withheld",
                 "recommended_interest_rate": "Withheld",
-                "decision_rationale": "Underwriting could not be completed because CAM generation failed."
+                "decision_rationale": "Underwriting could not be completed because CAM generation failed due to timeout. Triggering fallback decision."
             }
 
         appraisal_id = f"APPRAISAL_{int(datetime.now().timestamp())}"
@@ -292,10 +322,19 @@ class AgentCoordinator:
         }
 
 
-    async def build_evidence_trail(self, agent_outputs: dict) -> list[dict]:
+    async def build_evidence_trail(self, agent_outputs: dict, policy: dict = None) -> list[dict]:
         """Assemble evidence from all agent outputs into a structured trail."""
         evidence_list = []
         seen_descriptions = set()
+
+        if not policy:
+            policy = DEFAULT_POLICY
+
+        cr_safe = policy.get("current_ratio_safe", THRESHOLD_CURRENT_RATIO_SAFE)
+        cr_min = policy.get("current_ratio_min", THRESHOLD_CURRENT_RATIO_MIN)
+        dscr_safe = policy.get("dscr_safe", THRESHOLD_DSCR_SAFE)
+        dscr_min = policy.get("dscr_min", THRESHOLD_DSCR_MIN)
+        de_high = policy.get("de_high", THRESHOLD_DE_HIGH)
 
         def add_evidence(
             category: str,
@@ -372,8 +411,8 @@ class AgentCoordinator:
                 if current_ratio is not None:
                     try:
                         cr_val = float(current_ratio)
-                        if cr_val < THRESHOLD_CURRENT_RATIO_SAFE:
-                            severity = "HIGH" if cr_val < THRESHOLD_CURRENT_RATIO_MIN else "MEDIUM"
+                        if cr_val < cr_safe:
+                            severity = "HIGH" if cr_val < cr_min else "MEDIUM"
                             add_evidence(
                                 category="Financial Ratios",
                                 source="FinancialHealthAgent",
@@ -390,8 +429,8 @@ class AgentCoordinator:
                 if dscr is not None:
                     try:
                         dscr_val = float(dscr)
-                        if dscr_val < THRESHOLD_DSCR_SAFE:
-                            severity = "HIGH" if dscr_val < THRESHOLD_DSCR_MIN else "MEDIUM"
+                        if dscr_val < dscr_safe:
+                            severity = "HIGH" if dscr_val < dscr_min else "MEDIUM"
                             add_evidence(
                                 category="Financial Ratios",
                                 source="FinancialHealthAgent",
@@ -408,7 +447,7 @@ class AgentCoordinator:
                 if debt_to_equity is not None:
                     try:
                         de_val = float(debt_to_equity)
-                        if de_val > THRESHOLD_DE_HIGH:
+                        if de_val > de_high:
                             add_evidence(
                                 category="Financial Ratios",
                                 source="FinancialHealthAgent",
@@ -646,4 +685,3 @@ class AgentCoordinator:
             "have been logged to the audit evidence trail. Please review the detailed evidence "
             "trail below to determine final loan eligibility."
         )
-

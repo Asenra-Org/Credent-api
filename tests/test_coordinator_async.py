@@ -113,14 +113,37 @@ async def test_run_appraisal_multiple_agent_failures(mock_exists, coordinator_in
     assert fin_out["financial_health_score"] == 50.0
     assert "Financial analysis defaulted due to agent failure." in fin_out["analysis_notes"]
 
+def mock_wait_for_with_cleanup(return_value=None, side_effect=None):
+    """Custom mock for asyncio.wait_for that properly closes/cancels unawaited coroutines to prevent resource leaks."""
+    async def _mock_wait_for(fut, timeout=None):
+        try:
+            if side_effect:
+                if isinstance(side_effect, Exception):
+                    raise side_effect
+                elif callable(side_effect):
+                    res = side_effect()
+                    if asyncio.iscoroutine(res):
+                        await res
+                    return res
+                else:
+                    raise side_effect
+            return return_value
+        finally:
+            if asyncio.iscoroutine(fut):
+                fut.close()
+            elif isinstance(fut, asyncio.Future):
+                fut.cancel()
+
+    return _mock_wait_for
+
 @patch("app.agents.orchestration.coordinator.os.path.exists", return_value=True)
 async def test_run_appraisal_timeout_handling(mock_exists, coordinator_instance):
     """Verify that timeout during gather executes all fallbacks."""
     coordinator_instance.ingestion_agent.ingest_pdf.return_value = {"text": "Text content"}
     coordinator_instance.ingestion_agent.parse_financial_statement.return_value = {"company_name": "Asenra Corp", "sector": "Steel"}
 
-    # Patch wait_for to throw timeout
-    with patch("app.agents.orchestration.coordinator.asyncio.wait_for", side_effect=asyncio.TimeoutError()):
+    # Patch wait_for to throw timeout cleanly
+    with patch("app.agents.orchestration.coordinator.asyncio.wait_for", side_effect=mock_wait_for_with_cleanup(side_effect=asyncio.TimeoutError())):
         coordinator_instance.generate_explanation = AsyncMock(return_value="Rationale fallback.")
         coordinator_instance.cam_agent.generate_cam.return_value = {"decision": "PENDING"}
 

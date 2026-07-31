@@ -65,43 +65,23 @@ def _default_cam(score: int) -> dict:
         "decision_rationale": f"AI analysis unavailable. Score: {score}/100. Decision based on threshold (60). Manual review strongly recommended."
     }
 
+from app.database.database import save_appraisal, update_appraisal_status
+
 @router.patch("/update-status/{appraisal_id}")
 async def update_loan_status(appraisal_id: str, update: StatusUpdate):
-    """Formally Approve or Reject a loan in the Cloud Database."""
-    if not supabase:
-        raise HTTPException(status_code=500, detail="Cloud database not connected")
+    """Formally Approve or Reject a loan in Supabase (Primary) and SQLite (Fallback)."""
+    success = update_appraisal_status(appraisal_id, update.decision, update.rationale)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to update application status across database backends.")
     
-    try:
-        # Determine the RLS-compliant status mapping
-        # CHECK (status IN ('PENDING', 'UNDER_REVIEW', 'APPROVED', 'REJECTED', 'FLAGGED'))
-        status_map = {
-            "APPROVE": "APPROVED",
-            "REJECT": "REJECTED",
-            "PENDING": "UNDER_REVIEW",
-            "MANUAL": "UNDER_REVIEW"
-        }
-        final_status = status_map.get(update.decision, "UNDER_REVIEW")
-
-        response = supabase.table("loan_applications") \
-            .update({
-                "decision": update.decision,
-                "status": final_status,
-                "decision_rationale": update.rationale
-            }) \
-            .eq("id", appraisal_id) \
-            .execute()
-        
-        # Check if update actually happened
-        if not response.data or len(response.data) == 0:
-            print(f"⚠️ [DECISION WARNING] No row found with ID: {appraisal_id}")
-            raise HTTPException(status_code=404, detail="Application record not found in Cloud Database.")
-            
-        print(f"🏛️ [DECISION] Formal decision logged: {update.decision}/{final_status} for {appraisal_id}")
-        return {"status": "success", "message": f"Loan {update.decision} (Status: {final_status}) successfully."}
-    except HTTPException: raise
-    except Exception as e:
-        print(f"❌ [DECISION ERROR] Failed to update status: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    status_map = {
+        "APPROVE": "APPROVED",
+        "REJECT": "REJECTED",
+        "PENDING": "UNDER_REVIEW",
+        "MANUAL": "UNDER_REVIEW"
+    }
+    final_status = status_map.get(update.decision, "UNDER_REVIEW")
+    return {"status": "success", "message": f"Loan {update.decision} (Status: {final_status}) updated successfully."}
 
 @router.post("/generate-cam")
 async def generate_credit_appraisal_memo(raw_request: Request):

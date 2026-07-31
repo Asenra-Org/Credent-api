@@ -6,9 +6,11 @@
 # =============================================================================
 import os
 import json
+import uuid
 from datetime import datetime
 from supabase import create_client, Client
 from dotenv import load_dotenv
+import sqlite3
 
 load_dotenv()
 
@@ -17,7 +19,6 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # FALLBACK SQLITE CONFIG (Using absolute path to avoid Windows reloader issues)
-import sqlite3
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credent.db")
 
 def _get_supabase() -> Client:
@@ -32,13 +33,45 @@ def _get_supabase() -> Client:
         print(f"❌ Supabase Client Error: {e}")
         return None
 
+def get_sqlite_connection(timeout: float = 30.0) -> sqlite3.Connection:
+    """Returns a local SQLite connection configured with WAL mode and busy_timeout for production concurrency."""
+    conn = sqlite3.connect(DB_PATH, timeout=timeout)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout = 30000;")
+    return conn
+
 def init_db():
     """Initializes local SQLite for fallback, and ensures Supabase is reachable."""
     # Local SQLite fallback init
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_sqlite_connection()
     cursor = conn.cursor()
     cursor.execute('CREATE TABLE IF NOT EXISTS companies (id TEXT PRIMARY KEY, name TEXT, sector TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
     cursor.execute('CREATE TABLE IF NOT EXISTS appraisal_records (id TEXT PRIMARY KEY, company_id TEXT, revenue REAL, debt REAL, base_score INTEGER, adjusted_score INTEGER, decision TEXT, recommended_loan_amount TEXT, recommended_interest_rate TEXT, decision_rationale TEXT, raw_document_data TEXT, integrity_flags TEXT, web_research TEXT, cam_report TEXT, financial_ratios TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+    
+    # [Added] Initialize institution_policies table
+    cursor.execute('''CREATE TABLE IF NOT EXISTS institution_policies (
+        institution_id TEXT PRIMARY KEY,
+        current_ratio_safe REAL,
+        current_ratio_min REAL,
+        dscr_safe REAL,
+        dscr_min REAL,
+        de_high REAL,
+        auto_approve_cutoff REAL,
+        auto_reject_cutoff REAL,
+        penalty_weights TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    
+    # [Added] Seed default policy row if empty
+    cursor.execute('SELECT 1 FROM institution_policies WHERE institution_id = ?', ('DEFAULT',))
+    if not cursor.fetchone():
+        cursor.execute('''INSERT INTO institution_policies 
+            (institution_id, current_ratio_safe, current_ratio_min, dscr_safe, dscr_min, de_high, auto_approve_cutoff, auto_reject_cutoff, penalty_weights) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            ('DEFAULT', 1.2, 1.0, 1.25, 1.0, 2.0, 60.0, 40.0, json.dumps({
+                "integrity_mismatch": 15.0,
+                "promoter_flags": 10.0
+            })))
     
     # Safe backward-compatible migration for existing local databases
     cursor.execute('PRAGMA table_info(appraisal_records)')
@@ -71,6 +104,14 @@ def init_db():
         except sqlite3.OperationalError as e:
             if "duplicate column name" not in str(e).lower():
                 raise e
+
+    # [Added] Alter table to include institution_id column if not exists
+    if 'institution_id' not in columns:
+        try:
+            cursor.execute('ALTER TABLE appraisal_records ADD COLUMN institution_id TEXT DEFAULT "DEFAULT"')
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise e
         
     conn.commit()
     conn.close()
@@ -83,7 +124,7 @@ def init_db():
 
 def save_appraisal(data):
     """Saves appraisal results to Supabase (primary) and SQLite (fallback)."""
-    record_id = f"REC_{int(datetime.now().timestamp())}"
+    record_id = f"REC_{int(datetime.now().timestamp())}_{uuid.uuid4().hex[:8]}"
     sb = _get_supabase()
     
     # Helper to safely convert semi-structured AI data to numeric for DB
@@ -124,7 +165,8 @@ def save_appraisal(data):
         # New fields for promoter governance
         "management_score": _safe_float(data.get("management_score", 0.0)),
         "promoter_analysis": data.get("promoter_analysis") or [],
-        "governance_assessment": data.get("governance_assessment") or {}
+        "governance_assessment": data.get("governance_assessment") or {},
+        "institution_id": data.get("institution_id", "DEFAULT")
     }
 
     # 1. ATTEMPT SUPABASE SAVE
@@ -137,10 +179,10 @@ def save_appraisal(data):
 
     # 2. LOCAL SQLITE FALLBACK (Best practice for resilience)
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_sqlite_connection()
         cursor = conn.cursor()
         cursor.execute('INSERT OR REPLACE INTO companies (id, name, sector) VALUES (?, ?, ?)', (data.get("company_id"), data.get("company_name"), data.get("sector")))
-        cursor.execute('''INSERT INTO appraisal_records (id, company_id, revenue, debt, base_score, adjusted_score, decision, recommended_loan_amount, recommended_interest_rate, decision_rationale, raw_document_data, integrity_flags, web_research, cam_report, financial_ratios, management_score, promoter_analysis, governance_assessment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (record_id, data.get("company_id"), data.get("revenue"), data.get("debt"), data.get("base_score"), data.get("adjusted_score"), data.get("decision"), data.get("recommended_loan_amount"), data.get("recommended_interest_rate"), data.get("decision_rationale"), json.dumps(data.get("raw_document_data")), json.dumps(data.get("integrity_flags")), json.dumps(data.get("web_research")), json.dumps(data.get("cam_report")), json.dumps(payload["financial_ratios"]), payload["management_score"], json.dumps(payload["promoter_analysis"]), json.dumps(payload["governance_assessment"])))
+        cursor.execute('''INSERT INTO appraisal_records (id, company_id, revenue, debt, base_score, adjusted_score, decision, recommended_loan_amount, recommended_interest_rate, decision_rationale, raw_document_data, integrity_flags, web_research, cam_report, financial_ratios, management_score, promoter_analysis, governance_assessment, institution_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (record_id, data.get("company_id"), data.get("revenue"), data.get("debt"), data.get("base_score"), data.get("adjusted_score"), data.get("decision"), data.get("recommended_loan_amount"), data.get("recommended_interest_rate"), data.get("decision_rationale"), json.dumps(data.get("raw_document_data")), json.dumps(data.get("integrity_flags")), json.dumps(data.get("web_research")), json.dumps(data.get("cam_report")), json.dumps(payload["financial_ratios"]), payload["management_score"], json.dumps(payload["promoter_analysis"]), json.dumps(payload["governance_assessment"]), payload["institution_id"]))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -180,7 +222,7 @@ def get_recent_appraisals(limit=10):
             print(f"❌ Supabase Fetch Error: {e}")
 
     # Fallback to SQLite
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_sqlite_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT a.*, c.name as company_name FROM appraisal_records a JOIN companies c ON a.company_id = c.id ORDER BY a.created_at DESC LIMIT ?', (limit,))
     columns = [column[0] for column in cursor.description]
@@ -197,5 +239,100 @@ def get_recent_appraisals(limit=10):
         results.append(record)
     conn.close()
     return results
+
+def update_appraisal_status(appraisal_id: str, decision: str, rationale: str) -> bool:
+    """Updates status overrides in both Supabase (primary) and SQLite (fallback)."""
+    sb = _get_supabase()
+    status_map = {
+        "APPROVE": "APPROVED",
+        "REJECT": "REJECTED",
+        "PENDING": "UNDER_REVIEW",
+        "MANUAL": "UNDER_REVIEW"
+    }
+    final_status = status_map.get(decision, "UNDER_REVIEW")
+    
+    supabase_success = False
+    if sb:
+        try:
+            sb.table("loan_applications") \
+                .update({
+                    "decision": decision,
+                    "status": final_status,
+                    "decision_rationale": rationale
+                }) \
+                .eq("id", appraisal_id) \
+                .execute()
+            print(f"✅ Updated status in Supabase for {appraisal_id}")
+            supabase_success = True
+        except Exception as e:
+            print(f"❌ Supabase status update error: {e}")
+            
+    sqlite_success = False
+    try:
+        conn = get_sqlite_connection()
+        cursor = conn.cursor()
+        cursor.execute('''UPDATE appraisal_records 
+            SET decision = ?, decision_rationale = ? 
+            WHERE id = ?''', (decision, rationale, appraisal_id))
+        conn.commit()
+        conn.close()
+        print(f"✅ Updated status in SQLite for {appraisal_id}")
+        sqlite_success = True
+    except Exception as e:
+        print(f"❌ SQLite status update error: {e}")
+        
+    return supabase_success or sqlite_success
+
+def get_policy(institution_id: str) -> dict:
+    """Fetches policy parameters for an institution from SQLite fallback."""
+    try:
+        conn = get_sqlite_connection()
+        cursor = conn.cursor()
+        cursor.execute('''SELECT institution_id, current_ratio_safe, current_ratio_min, 
+                                 dscr_safe, dscr_min, de_high, auto_approve_cutoff, 
+                                 auto_reject_cutoff, penalty_weights 
+                          FROM institution_policies WHERE institution_id = ?''', (institution_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return {
+                "institution_id": row[0],
+                "current_ratio_safe": row[1],
+                "current_ratio_min": row[2],
+                "dscr_safe": row[3],
+                "dscr_min": row[4],
+                "de_high": row[5],
+                "auto_approve_cutoff": row[6],
+                "auto_reject_cutoff": row[7],
+                "penalty_weights": json.loads(row[8]) if row[8] else {}
+            }
+    except Exception as e:
+        print(f"❌ Error fetching policy: {e}")
+    return None
+
+def save_policy(policy_data: dict) -> bool:
+    """Saves policy parameters for an institution to SQLite fallback."""
+    try:
+        conn = get_sqlite_connection()
+        cursor = conn.cursor()
+        cursor.execute('''INSERT OR REPLACE INTO institution_policies 
+            (institution_id, current_ratio_safe, current_ratio_min, dscr_safe, dscr_min, de_high, auto_approve_cutoff, auto_reject_cutoff, penalty_weights) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''', (
+                policy_data.get("institution_id"),
+                policy_data.get("current_ratio_safe"),
+                policy_data.get("current_ratio_min"),
+                policy_data.get("dscr_safe"),
+                policy_data.get("dscr_min"),
+                policy_data.get("de_high"),
+                policy_data.get("auto_approve_cutoff"),
+                policy_data.get("auto_reject_cutoff"),
+                json.dumps(policy_data.get("penalty_weights", {}))
+            ))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"❌ Error saving policy: {e}")
+        return False
 
 init_db()

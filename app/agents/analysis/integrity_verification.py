@@ -370,5 +370,5 @@ class IntegrityVerificationAgent:
             return series.astype(str)
 
         # Fall back to pandas datetime parsing for full date strings.
-        parsed = pd.to_datetime(series, errors="coerce")
+        parsed = pd.to_datetime(series, errors="coerce", format="mixed")
         return parsed.dt.to_period("M").astype(str).where(parsed.notna(), other=pd.NA)

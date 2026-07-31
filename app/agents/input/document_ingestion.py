@@ -8,7 +8,7 @@ import tabula
 import os
 import json
 import re
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
