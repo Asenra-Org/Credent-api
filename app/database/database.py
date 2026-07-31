@@ -112,7 +112,10 @@ def init_db():
         except sqlite3.OperationalError as e:
             if "duplicate column name" not in str(e).lower():
                 raise e
-        
+
+    # [Added for ASE-46] Secondary index on created_at for recent appraisal feeds
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_appraisal_created_at ON appraisal_records(created_at DESC)')
+
     conn.commit()
     conn.close()
     
