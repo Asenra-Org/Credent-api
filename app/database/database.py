@@ -6,9 +6,11 @@
 # =============================================================================
 import os
 import json
+import uuid
 from datetime import datetime
 from supabase import create_client, Client
 from dotenv import load_dotenv
+import sqlite3
 
 load_dotenv()
 
@@ -17,7 +19,6 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # FALLBACK SQLITE CONFIG (Using absolute path to avoid Windows reloader issues)
-import sqlite3
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credent.db")
 
 def _get_supabase() -> Client:
@@ -123,7 +124,7 @@ def init_db():
 
 def save_appraisal(data):
     """Saves appraisal results to Supabase (primary) and SQLite (fallback)."""
-    record_id = f"REC_{int(datetime.now().timestamp())}"
+    record_id = f"REC_{int(datetime.now().timestamp())}_{uuid.uuid4().hex[:8]}"
     sb = _get_supabase()
     
     # Helper to safely convert semi-structured AI data to numeric for DB
