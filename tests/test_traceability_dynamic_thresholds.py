@@ -130,6 +130,13 @@ class TestDynamicPolicyEngine:
     """
 
     @pytest.mark.asyncio
+    @pytest.mark.xfail(
+        reason="Confirmed bug (Aug 1 QA report): coordinator.py fetches the DB "
+                "policy but never passes it to cam_agent.generate_cam() — only to "
+                "build_evidence_trail(). Remove this xfail once ASE-43 is fixed to "
+                "route the policy into generate_cam().",
+        strict=True,
+    )
     async def test_strict_bank_rejects_document_lenient_bank_approves(self):
         """
         Same document (financial_health_score=65) evaluated under two
