@@ -119,22 +119,45 @@ def _remove_duplicate_headers(pages_text: List[str]) -> List[str]:
     return cleaned_pages
 
 def normalize_to_inr(value):
+    """Normalize a financial value to INR (integer).
+
+    Handles:
+    - Already-numeric int/float inputs (with implicit crore scaling for small numbers)
+    - String inputs with explicit units (crore, lakh, million, k)
+    - Raw large numbers (already in INR)
+    - Indian comma-formatted numbers (e.g. '12,50,000')
+    - None / non-numeric input → returns None safely
+
+    ASE-48 fix: removed dead second ``return val_int`` that was unreachable
+    inside the ``isinstance`` branch, which silently returned None for pure
+    numeric inputs in the 0–500 range.
+    """
     if value is None:
         return None
 
-    # If already numeric
+    # -----------------------------------------------------------------------
+    # Branch A: Already a Python int or float — no string parsing needed.
+    # -----------------------------------------------------------------------
     if isinstance(value, (int, float)):
-        val_int = int(value)
-    # SMEs/Mid-caps are rarely > 500 Cr revenue. 
-    # If it's a small number, multiply by Crore.
-    if 0 < val_int < 500: 
-        return val_int * CRORE
-        return val_int
+        val_num = float(value)
+        # SMEs/mid-caps are rarely > 500 Cr revenue.
+        # Treat small round numbers as Crores (the LLM often returns '62' for '62 Cr').
+        if 0 < val_num < 500:
+            result = int(val_num * CRORE)
+        else:
+            result = int(val_num)
+        print(f"[NORMALIZE] Input: {value} (numeric) | Output: {result}")
+        return result
 
+    # -----------------------------------------------------------------------
+    # Branch B: String input — strip Indian comma formatting then parse.
+    # -----------------------------------------------------------------------
     value_str = str(value).replace(",", "").strip().lower()
 
-    # Extract numeric part
-    match = re.search(r'[\d.]+', value_str)
+    # Extract numeric part (handles decimals, ignores currency symbols)
+    # Use \d+ first to require at least one leading digit, then allow optional decimal.
+    # This prevents matching a leading period (e.g. from 'Rs. 38' → 'rs. 38').
+    match = re.search(r'\d+\.?\d*', value_str)
     if not match:
         return None
 
@@ -143,24 +166,24 @@ def normalize_to_inr(value):
     except ValueError:
         return None
 
-    # PRIORITY 1: Explicit Units
-    if "crore" in value_str or "cr" in value_str:
+    # PRIORITY 1: Explicit unit keywords
+    if "crore" in value_str or " cr" in value_str or value_str.endswith("cr"):
         normalized = int(number * CRORE)
     elif "lakh" in value_str:
         normalized = int(number * 100_000)
-    elif "m" in value_str and "crore" not in value_str: # Millions (usually from intl docs)
-        normalized = int(number * 10_000_00) # (10 Lakhs)
+    elif "m" in value_str and "crore" not in value_str:  # Millions (international docs)
+        normalized = int(number * 1_000_000)
     elif "k" in value_str and "lakh" not in value_str:
         normalized = int(number * 1_000)
-    
-    # PRIORITY 2: Raw Large Numbers
+
+    # PRIORITY 2: Raw large numbers — already in absolute INR
     elif number > 1_000_000:
         normalized = int(number)
-        
-    # PRIORITY 3: Implicit Scaling for Small Numbers
+
+    # PRIORITY 3: Implicit scaling — small numbers assumed to be in Crores
     elif 0 < number < 500:
         normalized = int(number * CRORE)
-        
+
     else:
         # Ambiguous numbers remain as-is to prevent 10x/100x explosions
         normalized = int(number)
@@ -284,11 +307,16 @@ class DocumentIngestionAgent:
             try:
                 from pdf2image import convert_from_path
                 import pytesseract
-                images = convert_from_path(file_path)
+                # ASE-48: Use PSM 6 (uniform block of text) which works best for
+                # financial statements with dense table/column layouts. PSM 3
+                # (default) misreads multi-column balance sheets as single column
+                # fragments, breaking the LLM's ability to associate labels with values.
+                _OCR_CONFIG = "--psm 6 --oem 1"
+                images = convert_from_path(file_path, dpi=300)
                 ocr_pages: List[str] = []
                 for i, img in enumerate(images):
                     try:
-                        text = pytesseract.image_to_string(img)
+                        text = pytesseract.image_to_string(img, config=_OCR_CONFIG)
                         ocr_pages.append(text)
                     except Exception as ocr_page_err:
                         print(f"[OCR] Page {i} failed: {ocr_page_err}")
@@ -450,22 +478,124 @@ class DocumentIngestionAgent:
             return DEFAULT_EXTRACTION.copy()
 
         prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a Senior Indian Credit Risk Officer. Extract all requested details from the raw document text. 
-            
-            INDIAN CONTEXT SENSITIVITY: 
+            ("system", """You are a Senior Indian Credit Risk Officer. Extract all requested details from the raw document text.
+
+            INDIAN CONTEXT SENSITIVITY:
             Pay special attention to and extract any mentions of:
             - GSTR-2A / GSTR-3B reconciliations
             - CIBIL Commercial scores or CMR rankings
             - SMA-0, SMA-1, SMA-2, or NPA classifications
             - EPFO/ESIC defaults
 
-            CRITICAL: Focus on HARD FINANCIAL DATA. 
+            CRITICAL: Focus on HARD FINANCIAL DATA.
             - Extract the balance sheet values:
               * total_revenue
               * total_debt
               * shareholder_equity
               * current_assets
               * current_liabilities
+
+            ============================================================
+            DEBT EXTRACTION RULES (ASE-48 — CRITICAL, READ CAREFULLY)
+            ============================================================
+
+            STEP 1 — RECOGNIZE ALL DEBT LABELS:
+            The field "total_debt" must capture the company's total financial
+            borrowings regardless of how they are labelled in the document.
+            All of the following labels refer to debt and MUST be captured:
+
+              Primary labels:
+              - Total Debt
+              - Total Borrowings
+              - Borrowings (standalone heading)
+              - Total Liabilities (ONLY when the document has no separate
+                borrowings line AND the total clearly represents financed debt)
+
+              Long-term debt labels:
+              - Long-term Borrowings
+              - Long Term Loans
+              - Term Loans (from banks / institutions)
+              - Secured Loans
+              - Unsecured Loans
+              - Debentures / Non-Convertible Debentures (NCDs)
+              - External Commercial Borrowings (ECB)
+              - Foreign Currency Term Loans
+
+              Short-term debt labels:
+              - Short-term Borrowings
+              - Short Term Loans
+              - Working Capital Loans
+              - Cash Credit (CC)
+              - Bank Overdraft (OD / Overdraft)
+              - Bill Discounting / Bill of Exchange
+              - Buyers Credit / Supplier Credit
+              - Current Maturities of Long-term Debt
+              - Current Portion of Term Loans
+
+            STEP 2 — AGGREGATION RULE:
+            If both Long-term Borrowings AND Short-term Borrowings are listed
+            separately, you MUST add them together:
+              total_debt = long_term_borrowings + short_term_borrowings
+            Do NOT pick only one of them. Both must be included.
+
+            STEP 3 — EXCLUSION RULE (Do NOT include as debt):
+            The following are NOT financial debt and must NOT be included
+            in total_debt:
+              - Trade Payables / Accounts Payable / Creditors
+              - Deferred Tax Liability (DTL)
+              - Provision for Tax / Provisions
+              - Other Current Liabilities (unless explicitly labeled as debt)
+              - Minority Interest
+              - Capital Reserves / Retained Earnings
+              - Deferred Revenue
+
+            STEP 4 — OCR ARTIFACT RECOVERY:
+            The document may be scanned and OCR-processed. Text may contain:
+              - Split numbers across lines (e.g. "12,50" on one line, ",000" on next)
+              - Garbled column separators (spaces, pipes, tabs mixed up)
+              - Missing labels with orphaned numbers on a row
+              - Duplicate values from headers and sub-totals
+            Strategy: Look at the CONTEXT of surrounding lines.
+            If a number appears on a row whose label matches any debt synonym
+            from STEP 1, treat it as a debt value even if spacing is off.
+
+            STEP 5 — MULTI-LINE & BROKEN-COLUMN RECOVERY:
+            Balance sheets often appear as two columns in the PDF.
+            OCR may flatten these into a sequence like:
+              "Long-term Borrowings  Secured Loans"
+              "12,50,000            8,00,000"
+            In such cases, match labels to the value that follows them
+            on the same visual row, even if they appear on adjacent text lines.
+
+            STEP 6 — MULTI-PAGE BALANCE SHEETS:
+            Debt items may appear across different pages (e.g., Notes to Accounts
+            on a later page than the Balance Sheet summary). If you find a
+            sub-total in the Notes that matches a line item in the Balance Sheet,
+            use the detailed Notes figure (it is more granular and accurate).
+
+            STEP 7 — CURRENCY NORMALIZATION:
+            - Remove commas from all Indian-format numbers (1,00,000 → 100000).
+            - Remove currency symbols (₹, INR, Rs., Rs).
+            - If document states values are "in Lakhs", multiply every figure by 100,000.
+            - If document states values are "in Crores", multiply every figure by 10,000,000.
+            - If document states values are "in Thousands", multiply every figure by 1,000.
+            - If no unit is stated and the number is > 1,000,000, treat as absolute INR.
+            - If no unit is stated and the number is < 500, treat as Crores.
+
+            STEP 8 — PRIORITY WHEN MULTIPLE DEBT FIGURES EXIST:
+            1. Use the "Total Borrowings" / "Total Debt" summary line if present.
+            2. Otherwise sum Long-term + Short-term borrowings.
+            3. If only one category is present, use that value alone.
+            4. If a figure appears both in the Balance Sheet and in Notes to
+               Accounts, prefer the Notes figure (more detailed).
+            5. Never double-count: if a sub-total is already included in a
+               higher-level total, do not add it again.
+
+            STEP 9 — MISSING DEBT:
+            If after exhaustive search across all pages no debt label is found,
+            return null for total_debt. Do NOT guess or assume debt = 0.
+            A null is safer than a wrong value for credit risk decisions.
+            ============================================================
 
             - SOURCE TRACEABILITY (Citations):
               For each of the main extracted metrics (revenue/total_revenue, debt/total_debt, equity/shareholder_equity), you MUST prove exactly where it came from in the document by providing a citation under the "citations" field.
@@ -477,11 +607,11 @@ class DocumentIngestionAgent:
             Rules:
 
             - Return all financial values as numeric floats.
-              -Remove commas and currency symbols.
-              -Convert crore/lakh values to INR.
-              -If a value is missing,return null.
-              -Do not return "N/A","-", or empty string.
-              
+              - Remove commas and currency symbols.
+              - Convert crore/lakh values to INR.
+              - If a value is missing, return null.
+              - Do not return "N/A", "-", or empty string.
+
               Identify Balance Sheet items: shareholder_equity, total assets/liabilities.
             - UNIT CONVERSION (MANDATORY): Return financial values as FOUND (e.g. '62 Cr', '120000000').
               * 1 Crore = 10,000,000
@@ -489,10 +619,10 @@ class DocumentIngestionAgent:
               * NEVER return raw numbers in Millions (e.g. 620) as they can be misinterpreted as 620 Crores.
               * If document mentions "38 Crores", return "380000000".
             - If the document is purely a "Transparency", "ESG" or "Policy" document WITHOUT financial tables, return null for those fields.
-            
-            DO NOT be swayed by "Good Tone" or "Governance Policies" if Revenue/Debt data is missing. 
+
+            DO NOT be swayed by "Good Tone" or "Governance Policies" if Revenue/Debt data is missing.
             A credit score of 0-100 MUST reflect presence of creditworthy financial data.
-            
+
             JSON schema:
             {{
                 "company_name": "string",
