@@ -24,13 +24,13 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credent.db")
 def _get_supabase() -> Client:
     # Print status for debugging startup
     if not SUPABASE_URL or not SUPABASE_KEY:
-        print("⚠️ Supabase Credentials Missing in .env")
+        print("[WARN] Supabase Credentials Missing in .env")
         return None
     try:
         client = create_client(SUPABASE_URL, SUPABASE_KEY)
         return client
     except Exception as e:
-        print(f"❌ Supabase Client Error: {e}")
+        print(f"[ERROR] Supabase Client Error: {e}")
         return None
 
 def get_sqlite_connection(timeout: float = 30.0) -> sqlite3.Connection:
@@ -121,9 +121,9 @@ def init_db():
     
     sb = _get_supabase()
     if sb:
-        print("✅ Supabase integration active.")
+        print("[OK] Supabase integration active.")
     else:
-        print("⚠️ Supabase not configured. Using local SQLite.")
+        print("[WARN] Supabase not configured. Using local SQLite.")
 
 def save_appraisal(data):
     """Saves appraisal results to Supabase (primary) and SQLite (fallback)."""
@@ -176,9 +176,9 @@ def save_appraisal(data):
     if sb:
         try:
             sb.table("loan_applications").insert(payload).execute()
-            print(f"✅ Saved appraisal to Supabase: {payload['borrower_name']}")
+            print(f"[OK] Saved appraisal to Supabase: {payload['borrower_name']}")
         except Exception as e:
-            print(f"❌ Supabase Save Error: {e}")
+            print(f"[ERROR] Supabase Save Error: {e}")
 
     # 2. LOCAL SQLITE FALLBACK (Best practice for resilience)
     try:
@@ -189,7 +189,7 @@ def save_appraisal(data):
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"❌ SQLite Save Error: {e}")
+        print(f"[ERROR] SQLite Save Error: {e}")
 
     return record_id
 
@@ -222,7 +222,7 @@ def get_recent_appraisals(limit=10):
                 })
             return records
         except Exception as e:
-            print(f"❌ Supabase Fetch Error: {e}")
+            print(f"[ERROR] Supabase Fetch Error: {e}")
 
     # Fallback to SQLite
     conn = get_sqlite_connection()
@@ -265,10 +265,10 @@ def update_appraisal_status(appraisal_id: str, decision: str, rationale: str) ->
                 }) \
                 .eq("id", appraisal_id) \
                 .execute()
-            print(f"✅ Updated status in Supabase for {appraisal_id}")
+            print(f"[OK] Updated status in Supabase for {appraisal_id}")
             supabase_success = True
         except Exception as e:
-            print(f"❌ Supabase status update error: {e}")
+            print(f"[ERROR] Supabase status update error: {e}")
             
     sqlite_success = False
     try:
@@ -279,10 +279,10 @@ def update_appraisal_status(appraisal_id: str, decision: str, rationale: str) ->
             WHERE id = ?''', (decision, rationale, appraisal_id))
         conn.commit()
         conn.close()
-        print(f"✅ Updated status in SQLite for {appraisal_id}")
+        print(f"[OK] Updated status in SQLite for {appraisal_id}")
         sqlite_success = True
     except Exception as e:
-        print(f"❌ SQLite status update error: {e}")
+        print(f"[ERROR] SQLite status update error: {e}")
         
     return supabase_success or sqlite_success
 
@@ -310,7 +310,7 @@ def get_policy(institution_id: str) -> dict:
                 "penalty_weights": json.loads(row[8]) if row[8] else {}
             }
     except Exception as e:
-        print(f"❌ Error fetching policy: {e}")
+        print(f"[ERROR] Error fetching policy: {e}")
     return None
 
 def save_policy(policy_data: dict) -> bool:
@@ -335,7 +335,7 @@ def save_policy(policy_data: dict) -> bool:
         conn.close()
         return True
     except Exception as e:
-        print(f"❌ Error saving policy: {e}")
+        print(f"[ERROR] Error saving policy: {e}")
         return False
 
 init_db()
