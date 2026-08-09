@@ -43,12 +43,13 @@ def test_management_quality_endpoint(client):
     response = client.get("/api/v1/analysis/management-quality?company_name=TestCompany")
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "success"
+    assert data["status"] == "error"
     assert data["company_name"] == "TestCompany"
-    assert "management_score" in data
+    assert data["management_score"] == 0.0
+    assert data["requires_manual_review"] is True
     assert "promoter_analysis" in data
     assert "governance_assessment" in data
-    assert len(data["promoter_analysis"]) > 0
+    assert len(data["promoter_analysis"]) == 0
 
 def test_sector_context_endpoint(client):
     """

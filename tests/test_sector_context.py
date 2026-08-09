@@ -29,12 +29,13 @@ async def test_get_sector_outlook_mocked_success(agent):
             return MockOutput()
             
     with patch("app.agents.analysis.sector_context.ChatPromptTemplate.__or__", return_value=MockChain()):
-        result = await agent.get_sector_outlook("Manufacturing")
-        assert result["sector"] == "Manufacturing"
-        assert result["outlook"] == "Negative"
-        assert result["risk_score"] == 8
-        assert result["risk_level"] == "High"
-        assert "High inflation" in result["risk_factors"]
+        with patch.object(agent, "get_local_macro_headwinds", return_value=[]):
+            result = await agent.get_sector_outlook("Manufacturing")
+            assert result["sector"] == "Manufacturing"
+            assert result["outlook"] == "Negative"
+            assert result["risk_score"] == 8
+            assert result["risk_level"] == "High"
+            assert "High inflation" in result["risk_factors"]
 
 @pytest.mark.asyncio
 async def test_check_rbi_policies_empty_input(agent):

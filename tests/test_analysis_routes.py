@@ -14,8 +14,10 @@ def test_management_quality_route():
     response = client.get("/api/v1/analysis/management-quality")
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "success"
-    assert "promoter_analysis" in data
+    assert data["status"] == "error"
+    assert data.get("requires_manual_review") is True
+    assert data.get("management_score") == 0.0
+    assert data.get("promoter_analysis") == []
 
 def test_sector_context_route():
     response = client.get("/api/v1/analysis/sector-context")

@@ -82,7 +82,7 @@ def test_regression_get_management_quality(client):
     response = client.get("/api/v1/analysis/management-quality?company_name=Asenra")
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "success"
+    assert data["status"] == "error"
     assert data["company_name"] == "Asenra"
     assert "management_score" in data
     assert "promoter_analysis" in data

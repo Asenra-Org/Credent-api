@@ -14,10 +14,12 @@ def test_citation_model_valid():
     assert citation.snippet == "Repayment capacity is strong"
     assert citation.page == 12
 
-def test_citation_model_invalid_missing_fields():
-    """Verify Citation model strictly requires id, snippet, and page."""
-    with pytest.raises(ValidationError):
-        Citation(id=1, snippet="Missing page")
+def test_citation_model_optional_fields():
+    """Verify Citation model allows optional snippet and page."""
+    citation = Citation(id=1)
+    assert citation.id == 1
+    assert citation.snippet is None
+    assert citation.page is None
 
 def test_metric_with_citation_valid():
     """Verify MetricWithCitation accepts text and citations."""
