@@ -435,7 +435,7 @@ class DocumentIngestionAgent:
         cleaned_len = len(text)
         reduction_pct = round((1 - cleaned_len / original_len) * 100, 1) if original_len else 0
         print(
-            f"[CLEAN] Text sanitized: {original_len} → {cleaned_len} chars "
+            f"[CLEAN] Text sanitized: {original_len} -> {cleaned_len} chars "
             f"({reduction_pct}% reduction)"
         )
         return text

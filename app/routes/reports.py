@@ -27,9 +27,9 @@ try:
     url: str = os.environ.get("SUPABASE_URL", "")
     key: str = os.environ.get("SUPABASE_KEY", "")
     supabase: Client = create_client(url, key)
-    print("✅ Cloud-Decision Engine: ACTIVE")
+    print("[OK] Cloud-Decision Engine: ACTIVE")
 except Exception as db_err:
-    print(f"❌ CRITICAL SYNC AGENT FAILURE: {db_err}")
+    print(f"[ERROR] CRITICAL SYNC AGENT FAILURE: {db_err}")
     save_appraisal = None
     supabase = None
 

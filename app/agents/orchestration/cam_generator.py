@@ -14,7 +14,7 @@ from typing import List, Dict, Optional
 
 class Citation(BaseModel):
     id: int = Field(description="Unique integer ID for the citation, matching the bracketed inline marker (e.g. [1]).")
-    snippet: str = Field(description="Exact excerpt from the provided text.")
+    snippet: Optional[str] = Field(default=None, description="Exact excerpt from the provided text.")
     page: Optional[int] = Field(default=None, description="Page number where the snippet was found, if available.")
 
 class MetricWithCitation(BaseModel):

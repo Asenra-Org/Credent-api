@@ -260,10 +260,10 @@ def run_seed():
         try:
             # Reusing the exact pipeline used by the main API
             record_id = save_appraisal(payload)
-            print(f"✅ Successfully seeded record ID: {record_id}")
+            print(f"[OK] Successfully seeded record ID: {record_id}")
             success_count += 1
         except Exception as e:
-            print(f"❌ Failed to seed {payload['company_name']}: {e}")
+            print(f"[ERROR] Failed to seed {payload['company_name']}: {e}")
             fail_count += 1
         
         # Mandatory 1-second sleep to prevent primary key collision (REC_{timestamp})
