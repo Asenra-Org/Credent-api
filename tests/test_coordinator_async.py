@@ -48,7 +48,7 @@ async def test_run_appraisal_successful_orchestration(mock_exists, coordinator_i
     coordinator_instance.ingestion_agent.parse_financial_statement.return_value = {"company_name": "Asenra Corp", "sector": "Steel"}
 
     coordinator_instance.financial_agent.analyze.return_value = {"financial_health_score": 75.0, "ratios": {}}
-    coordinator_instance.management_agent.analyze.return_value = {"management_score": 0.0}
+    coordinator_instance.management_agent.analyze.return_value = {"management_score": 100.0, "is_knockout": False, "requires_manual_review": False}
     coordinator_instance.sector_agent.get_sector_outlook.return_value = {"outlook": "Stable"}
     coordinator_instance.sector_agent.check_rbi_policies.return_value = []
     coordinator_instance.integrity_agent.cross_validate.return_value = {"flags": []}

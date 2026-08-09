@@ -96,6 +96,7 @@ class ManagementQualityResponse(BaseModel):
     company_name: str = Field(..., description="Name of the company being analyzed")
     management_score: float = Field(..., description="Management quality score out of 100")
     risk_level: str = Field(..., description="Overall management risk level")
+    requires_manual_review: bool = Field(False, description="Flag indicating if manual review is required")
     promoter_analysis: List[PromoterDetail] = Field(..., description="Detailed checks for each promoter/director")
     governance_assessment: GovernanceMetrics = Field(..., description="Assessment of governance and board structure")
 
@@ -207,6 +208,7 @@ async def get_management_quality(company_name: str = "Asenra Corp"):
         company_name=data.get("company_name", company_name),
         management_score=data.get("management_score", 0.0),
         risk_level=data.get("risk_level", "Undetermined"),
+        requires_manual_review=data.get("requires_manual_review", False),
         promoter_analysis=data.get("promoter_analysis", []),
         governance_assessment=data.get("governance_assessment", {
             "board_independence": "Undetermined",

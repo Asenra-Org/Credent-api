@@ -170,7 +170,7 @@ async def test_generate_explanation_success(coordinator_instance):
     """Verify successful LLM rationale synthesis."""
     mock_response = MagicMock()
     mock_response.content = "Appraisal Rationale Summary: Strong credit profiles."
-    
+
     with patch("app.agents.orchestration.coordinator.asyncio.wait_for", side_effect=mock_wait_for_with_cleanup(return_value=mock_response)):
         evidence = [
             {"category": "Financial Ratios", "source_agent": "FinAgent", "severity": "INFO", "title": "Good Ratios", "description": "Safe current ratio", "recommendation": "None"}
@@ -376,6 +376,35 @@ class TestRunAppraisalGracefulDegradation:
         assert mgt_output["management_score"] == 0.0
         assert mgt_output["risk_level"] == "Undetermined"
 
+        # New assertions for ASE-49 Fallback Contract
+        assert mgt_output["status"] == "error"
+        assert mgt_output["requires_manual_review"] is True
+        assert mgt_output["fallback_reason"] == "llm_failure"
+        assert mgt_output["promoter_analysis"] == []
+        assert result["combined_decision"]["decision"] == "MANUAL REVIEW"
+
+    async def test_management_agent_failure_with_promoter_ids_supplied(self):
+        coordinator = _mocked_coordinator()
+        coordinator.management_agent.analyze = AsyncMock(side_effect=Exception("Simulated timeout"))
+
+        with patch("os.path.exists", return_value=True):
+            result = await coordinator.run_appraisal({"file_path": "fake.pdf", "promoter_ids": ["Real Promoter"]})
+
+        mgt_output = result["individual_agent_outputs"]["management_quality"]
+        assert mgt_output["promoter_analysis"] == []
+        assert result["combined_decision"]["decision"] == "MANUAL REVIEW"
+
+    async def test_management_agent_failure_with_promoter_ids_omitted(self):
+        coordinator = _mocked_coordinator()
+        coordinator.management_agent.analyze = AsyncMock(side_effect=Exception("Simulated timeout"))
+
+        with patch("os.path.exists", return_value=True):
+            result = await coordinator.run_appraisal({"file_path": "fake.pdf"})
+
+        mgt_output = result["individual_agent_outputs"]["management_quality"]
+        assert mgt_output["promoter_analysis"] == []
+        assert result["combined_decision"]["decision"] == "MANUAL REVIEW"
+
     async def test_all_four_downstream_agents_failing_still_returns_success(self):
         """Worst case: every downstream analysis agent fails. Pipeline should
         still complete via fallbacks, not crash entirely."""
@@ -423,3 +452,59 @@ class TestRunAppraisalCamFallback:
             result = await coordinator.run_appraisal({"file_path": "fake.pdf"})
 
         assert result["combined_decision"]["decision"] == "MANUAL REVIEW"
+
+
+class TestCoordinatorManagementHardGate:
+    """ASE-49: Validating the independent management score hard gate."""
+
+    @pytest.mark.asyncio
+    async def test_management_score_below_50_forces_reject(self):
+        coordinator = _mocked_coordinator()
+        # High financial score
+        coordinator.financial_agent.analyze = AsyncMock(return_value={"status": "success", "financial_health_score": 90.0})
+        # Low management score
+        coordinator.management_agent.analyze = AsyncMock(return_value={"status": "success", "management_score": 49.0, "is_knockout": False})
+
+        with patch("os.path.exists", return_value=True):
+            result = await coordinator.run_appraisal({"file_path": "fake.pdf"})
+
+        assert result["combined_decision"]["decision"] == "REJECT"
+        assert "Management Hard Gate: Score (49.0) is below the minimum threshold of 50." in result["combined_decision"]["decision_rationale"]
+
+    @pytest.mark.asyncio
+    async def test_management_score_exactly_50_allows_approve(self):
+        coordinator = _mocked_coordinator()
+        coordinator.financial_agent.analyze = AsyncMock(return_value={"status": "success", "financial_health_score": 90.0})
+        coordinator.management_agent.analyze = AsyncMock(return_value={"status": "success", "management_score": 50.0, "is_knockout": False})
+
+        with patch("os.path.exists", return_value=True):
+            result = await coordinator.run_appraisal({"file_path": "fake.pdf"})
+
+        # Not rejected by management gate, gets whatever CAM generates (mock says APPROVE)
+        assert result["combined_decision"]["decision"] == "APPROVE"
+
+    @pytest.mark.asyncio
+    async def test_management_knockout_forces_reject_regardless_of_score(self):
+        coordinator = _mocked_coordinator()
+        coordinator.financial_agent.analyze = AsyncMock(return_value={"status": "success", "financial_health_score": 90.0})
+        # Knockout
+        coordinator.management_agent.analyze = AsyncMock(return_value={"status": "success", "management_score": 100.0, "is_knockout": True})
+
+        with patch("os.path.exists", return_value=True):
+            result = await coordinator.run_appraisal({"file_path": "fake.pdf"})
+
+        assert result["combined_decision"]["decision"] == "REJECT"
+        assert "Management Hard Gate: Knockout condition detected" in result["combined_decision"]["decision_rationale"]
+
+    @pytest.mark.asyncio
+    async def test_management_manual_review_forces_manual_review(self):
+        coordinator = _mocked_coordinator()
+        coordinator.financial_agent.analyze = AsyncMock(return_value={"status": "success", "financial_health_score": 90.0})
+        # Manual Review
+        coordinator.management_agent.analyze = AsyncMock(return_value={"status": "success", "management_score": 0.0, "requires_manual_review": True, "is_knockout": False})
+
+        with patch("os.path.exists", return_value=True):
+            result = await coordinator.run_appraisal({"file_path": "fake.pdf"})
+
+        assert result["combined_decision"]["decision"] == "MANUAL REVIEW"
+        assert "Management assessment could not be completed and manual review is required" in result["combined_decision"]["decision_rationale"]

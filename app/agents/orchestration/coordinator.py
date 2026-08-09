@@ -184,18 +184,14 @@ class AgentCoordinator:
         }
 
         management_fallback = {
-            "status": "success",
+            "status": "error",
             "company_name": company_name,
             "management_score": 0.0,
             "risk_level": "Undetermined",
-            "promoter_analysis": [
-                {
-                    "name": p,
-                    "experience_years": 0,
-                    "risk_flags": [],
-                    "verdict": "Undetermined"
-                } for p in (promoter_ids if promoter_ids else [company_name])
-            ],
+            "requires_manual_review": True,
+            "fallback_reason": "llm_failure",
+            "is_knockout": False,
+            "promoter_analysis": [],
             "governance_assessment": {
                 "board_independence": "Undetermined",
                 "regulatory_compliance": "Undetermined",
@@ -290,6 +286,27 @@ class AgentCoordinator:
             "litigation_signals": []
         }
 
+        management_score = management_result.get("management_score", 0.0)
+        is_knockout = management_result.get("is_knockout", False)
+        requires_manual_review = management_result.get("requires_manual_review", False)
+        fallback_reason = management_result.get("fallback_reason", "system_error")
+
+        forced_decision = None
+        forced_rationale = None
+
+        if requires_manual_review:
+            forced_decision = "MANUAL REVIEW"
+            if fallback_reason == "missing_promoter":
+                forced_rationale = "Management assessment could not be completed because promoter information was unavailable. The case has been escalated for manual review."
+            else:
+                forced_rationale = "Management assessment could not be completed and manual review is required."
+        elif is_knockout:
+            forced_decision = "REJECT"
+            forced_rationale = "Management Hard Gate: Knockout condition detected."
+        elif management_score < 50:
+            forced_decision = "REJECT"
+            forced_rationale = f"Management Hard Gate: Score ({management_score}) is below the minimum threshold of 50."
+
         try:
             cam_result = await self.cam_agent.generate_cam(
                 extracted_financials,
@@ -297,15 +314,59 @@ class AgentCoordinator:
                 web_research,
                 score
             )
+
+            # Apply Hard Gate Override
+            if forced_decision:
+                cam_result["decision"] = forced_decision
+                original_rationale = cam_result.get("decision_rationale", "")
+
+                if requires_manual_review:
+                    if fallback_reason == "missing_promoter":
+                        five_c_text = "Manual review required because promoter information is unavailable or could not be extracted."
+                    else:
+                        five_c_text = "Manual review required because management assessment could not be completed."
+
+                    if isinstance(cam_result.get("five_cs"), dict):
+                        for k in cam_result["five_cs"]:
+                            if isinstance(cam_result["five_cs"][k], dict):
+                                cam_result["five_cs"][k]["text"] = five_c_text
+                            else:
+                                cam_result["five_cs"][k] = five_c_text
+
+                    if "System encountered an error" in original_rationale:
+                        cam_result["decision_rationale"] = forced_rationale
+                    else:
+                        cam_result["decision_rationale"] = f"{forced_rationale}\n\nOriginal Synthesis: {original_rationale}"
+                else:
+                    cam_result["decision_rationale"] = f"{forced_rationale}\n\nOriginal Synthesis: {original_rationale}"
+
+                if forced_decision == "REJECT":
+                    cam_result["recommended_loan_amount"] = "0"
+                    cam_result["recommended_interest_rate"] = "N/A"
+                elif forced_decision == "MANUAL REVIEW":
+                    cam_result["recommended_loan_amount"] = "Withheld"
+                    cam_result["recommended_interest_rate"] = "TBD"
+
         except Exception as cam_exc:
             logger.warning("Decision engine failed: %s. Triggering fallback decision mapping.", str(cam_exc))
             decision = "MANUAL REVIEW"
+
+            if requires_manual_review and fallback_reason == "missing_promoter":
+                five_c_text = "Manual review required because promoter information is unavailable or could not be extracted."
+                rationale_text = "Management assessment could not be completed because promoter information was unavailable. The case has been escalated for manual review."
+            elif requires_manual_review:
+                five_c_text = "Manual review required because management assessment could not be completed."
+                rationale_text = "Management assessment could not be completed and manual review is required."
+            else:
+                five_c_text = "Manual review required due to system error."
+                rationale_text = "Underwriting could not be completed because CAM generation failed due to timeout. Triggering fallback decision."
+
             cam_result = {
-                "five_cs": {k: "Manual review required due to system error." for k in ["character", "capacity", "capital", "collateral", "conditions"]},
+                "five_cs": {k: five_c_text for k in ["character", "capacity", "capital", "collateral", "conditions"]},
                 "decision": decision,
                 "recommended_loan_amount": "Withheld",
                 "recommended_interest_rate": "Withheld",
-                "decision_rationale": "Underwriting could not be completed because CAM generation failed due to timeout. Triggering fallback decision."
+                "decision_rationale": rationale_text
             }
 
         appraisal_id = f"APPRAISAL_{int(datetime.now().timestamp())}"
@@ -385,7 +446,7 @@ class AgentCoordinator:
                             recommendation="Review litigation details and verify active legal liabilities.",
                             confidence="High",
                         )
-            
+
             # Parse sanction details
             sanctions = ingestion.get("sanction_details", [])
             if isinstance(sanctions, list):
@@ -584,7 +645,7 @@ class AgentCoordinator:
                             recommendation="Request original transactional records, verified GST filings, or reconciled bank files.",
                             confidence="High",
                         )
-            
+
             warnings = integrity.get("warnings", [])
             if isinstance(warnings, list):
                 for warning in warnings:
@@ -674,7 +735,7 @@ class AgentCoordinator:
             if negatives:
                 summary_parts.append("\nNegative/Warning Factors:")
                 summary_parts.extend(f"- {n}" for n in negatives[:5])
-            
+
             return "\n".join(summary_parts)
         except Exception as fallback_err:
             logger.error(f"Deterministic explanation fallback failed: {fallback_err}", exc_info=True)

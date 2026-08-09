@@ -44,7 +44,7 @@ class ManagementQualityAgent:
             raw_history = await self.check_promoter_history(promoters)
         except Exception:
             logger.exception("LLM promoter history check failed due to an unexpected error.")
-            return self._build_fallback_response(company_name)
+            return self._build_fallback_response(company_name, fallback_reason="llm_failure")
 
         validated_history = self._validate_llm_response(raw_history)
 
@@ -52,7 +52,7 @@ class ManagementQualityAgent:
             return self._map_to_management_response(company_name, promoters, validated_history)
         except Exception:
             logger.exception("Failed to map management quality response to API schema.")
-            return self._build_fallback_response(company_name)
+            return self._build_fallback_response(company_name, fallback_reason="llm_failure")
 
     def _extract_and_normalize_input(self, entity_data: dict[str, Any]) -> tuple[str, list[str]]:
         """Defensively parse the untrusted entity_data dictionary."""
@@ -63,54 +63,111 @@ class ManagementQualityAgent:
         promoters = entity_data.get("promoter_ids", [])
 
         if not isinstance(promoters, list) or len(promoters) == 0:
-            promoters = [company_name]
+            promoters = []
 
         sanitized_promoters = [str(p) for p in promoters if p is not None]
         return company_name, sanitized_promoters
 
     def _validate_llm_response(self, history: dict[str, Any]) -> dict[str, Any]:
-        """Treat LLM response as untrusted input; rigorously enforce types and lists."""
-        if not isinstance(history, dict):
-            return {
-                "past_defaults": False,
-                "regulatory_actions": []
-            }
+        """Treat LLM response as untrusted input; rigorously enforce types."""
+        if not isinstance(history, dict) or history.get("_extraction_failed"):
+            reason = history.get("fallback_reason", "llm_failure") if isinstance(history, dict) else "llm_failure"
+            return {"_extraction_failed": True, "fallback_reason": reason}
 
-        # Enforce boolean evaluation defensively
-        raw_defaults = history.get("past_defaults")
-        past_defaults = raw_defaults if isinstance(raw_defaults, bool) else False
+        def _get_bool(key: str) -> bool:
+            val = history.get(key)
+            return bool(val) if isinstance(val, bool) else False
 
-        # Enforce list type and sanitize elements
-        raw_actions = history.get("regulatory_actions")
-        if not isinstance(raw_actions, list):
-            raw_actions = []
+        def _get_int(key: str) -> int:
+            val = history.get(key)
+            if isinstance(val, int):
+                return max(0, val)
+            try:
+                return max(0, int(val))
+            except (ValueError, TypeError):
+                return 0
 
-        regulatory_actions = [str(action) for action in raw_actions if action is not None]
+        # Extracted variables
+        wilful_default = _get_bool("wilful_default")
+        fraud_misconduct = _get_bool("fraud_misconduct")
+        bankruptcy_insolvency = _get_bool("bankruptcy_insolvency")
+        director_disqualification = _get_bool("director_disqualification")
+        historical_default_count = _get_int("historical_default_count")
+        minor_regulatory_actions = _get_bool("minor_regulatory_actions")
+
+        # Handle contradiction: wilful default requires at least one default context
+        # But knockout is authoritative, so we don't necessarily need to mutate the count.
 
         return {
-            "past_defaults": past_defaults,
-            "regulatory_actions": regulatory_actions
+            "wilful_default": wilful_default,
+            "fraud_misconduct": fraud_misconduct,
+            "bankruptcy_insolvency": bankruptcy_insolvency,
+            "director_disqualification": director_disqualification,
+            "historical_default_count": historical_default_count,
+            "minor_regulatory_actions": minor_regulatory_actions,
         }
+
+    def calculate_management_score(self, validated_history: dict[str, Any]) -> tuple[float, bool]:
+        """Calculate deterministic score and return (score, is_knockout)."""
+        # Knockouts
+        if (validated_history.get("wilful_default") or
+            validated_history.get("fraud_misconduct") or
+            validated_history.get("bankruptcy_insolvency") or
+            validated_history.get("director_disqualification")):
+            return 0.0, True
+
+        score = 100.0
+
+        # Defaults (non-wilful)
+        default_count = validated_history.get("historical_default_count", 0)
+        if default_count > 1:
+            score -= 45.0
+        elif default_count == 1:
+            score -= 35.0
+
+        # Regulatory Actions
+        if validated_history.get("minor_regulatory_actions"):
+            score -= 15.0
+
+        score = max(0.0, min(100.0, score))
+        return score, False
 
     def _map_to_management_response(self, company_name: str, promoters: list[str], validated_history: dict[str, Any]) -> dict[str, Any]:
         """Strictly map validated intelligence into the Pydantic API response schema."""
-        risk_flags = list(validated_history["regulatory_actions"])
+        if validated_history.get("_extraction_failed"):
+            reason = validated_history.get("fallback_reason", "llm_failure")
+            return self._build_fallback_response(company_name, fallback_reason=reason)
 
-        if validated_history["past_defaults"]:
-            risk_flags.append("PAST_DEFAULTS_DETECTED")
+        score, is_knockout = self.calculate_management_score(validated_history)
 
-        # We do not invent business rules. If discrete data is unavailable, we use project-safe placeholders.
+        risk_flags = []
+        if validated_history.get("wilful_default"): risk_flags.append("WILFUL_DEFAULT")
+        if validated_history.get("fraud_misconduct"): risk_flags.append("FRAUD_MISCONDUCT")
+        if validated_history.get("bankruptcy_insolvency"): risk_flags.append("BANKRUPTCY_INSOLVENCY")
+        if validated_history.get("director_disqualification"): risk_flags.append("DIRECTOR_DISQUALIFICATION")
+        if validated_history.get("historical_default_count", 0) > 0: risk_flags.append("PAST_DEFAULTS_DETECTED")
+        if validated_history.get("minor_regulatory_actions"): risk_flags.append("MINOR_REGULATORY_ACTIONS")
+
+        if is_knockout or score < 50:
+            risk_level = "High"
+        elif score < 75:
+            risk_level = "Medium"
+        else:
+            risk_level = "Low"
+
         return {
             "status": STATUS_SUCCESS,
             "company_name": company_name,
-            "management_score": 0.0,
-            "risk_level": UNDETERMINED,
+            "management_score": score,
+            "risk_level": risk_level,
+            "requires_manual_review": False,
+            "is_knockout": is_knockout,
             "promoter_analysis": [
                 {
                     "name": p,
                     "experience_years": 0,
                     "risk_flags": risk_flags,
-                    "verdict": UNDETERMINED
+                    "verdict": risk_level
                 } for p in promoters
             ],
             "governance_assessment": {
@@ -120,14 +177,16 @@ class ManagementQualityAgent:
             }
         }
 
-    def _build_fallback_response(self, company_name: str) -> dict[str, Any]:
+    def _build_fallback_response(self, company_name: str, fallback_reason: str = "llm_failure") -> dict[str, Any]:
         """Construct a safe, fail-closed payload formatted strictly to API schemas."""
-        # Unmapped extra fields (like 'warnings') have been stripped to strictly satisfy the schema.
         return {
             "status": STATUS_ERROR,
             "company_name": company_name,
             "management_score": 0.0,
-            "risk_level": UNDETERMINED,
+            "risk_level": "Undetermined",
+            "requires_manual_review": True,
+            "fallback_reason": fallback_reason,
+            "is_knockout": False,
             "promoter_analysis": [],
             "governance_assessment": {
                 "board_independence": UNDETERMINED,
@@ -154,11 +213,9 @@ class ManagementQualityAgent:
 
         if not sanitized_promoters:
             return {
-                "director_cibil_scores": [],
-                "past_defaults": False,
-                "regulatory_actions": [],
-                "past_ventures": [],
+                "_extraction_failed": True,
                 "warnings": ["No valid promoter IDs provided for verification."],
+                "fallback_reason": "missing_promoter"
             }
 
         prompt = f"""
@@ -166,27 +223,28 @@ class ManagementQualityAgent:
 
         Analyze the provided promoter information.
 
-        Extract:
-        - Director CIBIL scores
-        - Past loan defaults
-        - Regulatory actions
-        - Past ventures
+        Extract qualitative facts to determine promoter risk.
 
-        Return only valid JSON in this format:
+        Return only valid JSON in this exact format:
 
         {{
-            "director_cibil_scores": [],
-            "past_defaults": false,
-            "regulatory_actions": [],
-            "past_ventures": [],
-            "warnings": []
+            "wilful_default": false,
+            "fraud_misconduct": false,
+            "bankruptcy_insolvency": false,
+            "director_disqualification": false,
+            "historical_default_count": 0,
+            "minor_regulatory_actions": false
         }}
 
-        If a past default is found:
-        - Set past_defaults to true.
-        - Add a clear warning to the warnings list.
+        Guidelines:
+        - wilful_default: set to true ONLY if there is evidence of intentional default.
+        - fraud_misconduct: set to true if there is confirmed fraud or financial crime.
+        - bankruptcy_insolvency: set to true if the entity or promoter faced bankruptcy.
+        - director_disqualification: set to true if legally barred from directorship.
+        - historical_default_count: integer representing the exact count of past ordinary defaults (NOTE: settled defaults still count).
+        - minor_regulatory_actions: set to true if non-fatal regulatory infractions occurred.
 
-        If information is unavailable, return empty lists or null.
+        If information is unavailable, return false for booleans and 0 for count.
 
         Promoters:
         {sanitized_promoters}
@@ -197,10 +255,7 @@ class ManagementQualityAgent:
         except Exception as e:
             logger.error(f"Error invoking Groq LLM: {e}", exc_info=True)
             return {
-                "director_cibil_scores": [],
-                "past_defaults": False,
-                "regulatory_actions": [],
-                "past_ventures": [],
+                "_extraction_failed": True,
                 "warnings": ["Unable to parse promoter history response due to service outage."],
             }
 
@@ -222,10 +277,7 @@ class ManagementQualityAgent:
         except (json.JSONDecodeError, TypeError) as parse_err:
             logger.error(f"Failed to parse LLM response JSON: {parse_err}", exc_info=True)
             return {
-                "director_cibil_scores": [],
-                "past_defaults": False,
-                "regulatory_actions": [],
-                "past_ventures": [],
+                "_extraction_failed": True,
                 "warnings": ["Unable to parse promoter history response due to formatting issue."],
             }
 
