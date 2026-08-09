@@ -19,10 +19,17 @@ import pytest
 from app.database.database import init_db, save_appraisal, get_recent_appraisals
 
 
+from unittest.mock import patch
+
 @pytest.fixture(autouse=True)
 def ensure_db_initialized():
     init_db()
 
+
+@pytest.fixture(autouse=True)
+def disable_supabase():
+    with patch("app.database.database._get_supabase", return_value=None):
+        yield
 
 class TestConcurrentUploads:
 
