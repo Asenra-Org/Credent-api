@@ -11,6 +11,7 @@ import pikepdf
 from datetime import datetime
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from app.agents.input.document_ingestion import DocumentIngestionAgent
+from app.agents.security.document_security import DocumentSecurityAgent
 
 router = APIRouter()
 
@@ -206,6 +207,15 @@ async def ingest_pdf_document(file: UploadFile = File(...), institution_id: str 
         with open(temp_file_path, "wb") as buffer:
             buffer.write(content)
 
+        # 0. ASE-55 Security Scan (Gate 1)
+        security_scan = DocumentSecurityAgent.scan_file(temp_file_path)
+        if not security_scan.is_safe:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Security validation failed. Flags: {', '.join(security_scan.flags)}"
+            )
+        security_warnings = security_scan.warnings
+
         # 1. Run Integrity Scan (Forensics)
         forensics = run_pdf_forensics(temp_file_path)
 
@@ -243,6 +253,7 @@ async def ingest_pdf_document(file: UploadFile = File(...), institution_id: str 
             appraisal_result["filename"] = safe_filename
             appraisal_result["tables_found"] = ingestion_data.get("tables_count", 0)
             appraisal_result["ai_analysis"] = ingestion_data
+            appraisal_result["security_warnings"] = security_warnings
 
             # 3. Save appraisal results to Supabase (Primary) and SQLite (Fallback)
             try:
