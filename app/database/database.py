@@ -7,7 +7,7 @@
 import os
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import sqlite3
@@ -116,6 +116,22 @@ def init_db():
     # [Added for ASE-46] Secondary index on created_at for recent appraisal feeds
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_appraisal_created_at ON appraisal_records(created_at DESC)')
 
+    # [Added for ASE-54] Persistent loan case state table for dynamic coordinator
+    cursor.execute('''CREATE TABLE IF NOT EXISTS loan_cases (
+        case_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        current_step TEXT DEFAULT 'init',
+        has_financials INTEGER DEFAULT 1,
+        has_promoters INTEGER DEFAULT 1,
+        institution_id TEXT DEFAULT 'DEFAULT',
+        input_data TEXT DEFAULT '{}',
+        result_data TEXT DEFAULT '{}',
+        error_message TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_loan_cases_status ON loan_cases(status)')
+
     conn.commit()
     conn.close()
     
@@ -125,7 +141,93 @@ def init_db():
     else:
         print("[WARN] Supabase not configured. Using local SQLite.")
 
+
+# =============================================================================
+# [ASE-54] Loan Case State CRUD Helpers
+# =============================================================================
+
+def create_case(case_id: str, input_data: dict, institution_id: str = "DEFAULT") -> str:
+    """Create a new loan case record in PENDING state. Returns case_id."""
+    conn = get_sqlite_connection()
+    try:
+        conn.execute(
+            '''INSERT INTO loan_cases (case_id, status, current_step, institution_id, input_data, created_at, updated_at)
+               VALUES (?, 'PENDING', 'init', ?, ?, ?, ?)''',
+            (case_id, institution_id, json.dumps(input_data),
+             datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat())
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return case_id
+
+
+def update_case_step(case_id: str, step: str, status: str = "RUNNING") -> None:
+    """Persist the coordinator's current execution step and status."""
+    conn = get_sqlite_connection()
+    try:
+        conn.execute(
+            '''UPDATE loan_cases SET current_step = ?, status = ?, updated_at = ? WHERE case_id = ?''',
+            (step, status, datetime.now(timezone.utc).isoformat(), case_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_case_result(case_id: str, result_data: dict, status: str = "COMPLETED") -> None:
+    """Persist the final result and mark the case terminal."""
+    conn = get_sqlite_connection()
+    try:
+        conn.execute(
+            '''UPDATE loan_cases SET result_data = ?, status = ?, current_step = 'done', updated_at = ? WHERE case_id = ?''',
+            (json.dumps(result_data), status, datetime.now(timezone.utc).isoformat(), case_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_case_failed(case_id: str, error_message: str) -> None:
+    """Mark a case as FAILED with the error reason."""
+    conn = get_sqlite_connection()
+    try:
+        conn.execute(
+            '''UPDATE loan_cases SET status = 'FAILED', error_message = ?, updated_at = ? WHERE case_id = ?''',
+            (str(error_message)[:1000], datetime.now(timezone.utc).isoformat(), case_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_case(case_id: str) -> dict | None:
+    """Retrieve a loan case row by case_id. Returns None if not found."""
+    conn = get_sqlite_connection()
+    try:
+        cursor = conn.execute(
+            '''SELECT case_id, status, current_step, has_financials, has_promoters,
+               institution_id, input_data, result_data, error_message, created_at, updated_at
+               FROM loan_cases WHERE case_id = ?''',
+            (case_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        keys = ["case_id", "status", "current_step", "has_financials", "has_promoters",
+                "institution_id", "input_data", "result_data", "error_message", "created_at", "updated_at"]
+        record = dict(zip(keys, row))
+        record["input_data"] = json.loads(record["input_data"] or "{}")
+        record["result_data"] = json.loads(record["result_data"] or "{}")
+        record["has_financials"] = bool(record["has_financials"])
+        record["has_promoters"] = bool(record["has_promoters"])
+        return record
+    finally:
+        conn.close()
+
+
 def save_appraisal(data):
+
     """Saves appraisal results to Supabase (primary) and SQLite (fallback)."""
     record_id = f"REC_{int(datetime.now().timestamp())}_{uuid.uuid4().hex[:8]}"
     sb = _get_supabase()
