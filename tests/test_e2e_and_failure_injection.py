@@ -271,7 +271,7 @@ def test_uuid_prefixed_upload_filenames_unique(client):
             "combined_decision": {"decision": "APPROVE", "decision_rationale": "Mock rationale"}
         }
 
-    with patch("app.routes.documents.AgentCoordinator.run_appraisal", mock_run_appraisal), \
+    with patch("app.routes.documents.AgentCoordinator.run_appraisal_with_state", mock_run_appraisal), \
          patch("app.routes.documents.run_pdf_forensics", return_value={"is_suspicious": False, "flags": []}):
         
         files1 = {"file": ("statement.pdf", dummy_pdf, "application/pdf")}

@@ -209,9 +209,9 @@ async def ingest_pdf_document(file: UploadFile = File(...), institution_id: str 
         # 1. Run Integrity Scan (Forensics)
         forensics = run_pdf_forensics(temp_file_path)
 
-        # 2. Trigger Full Orchestrator Multi-Agent Appraisal Pipeline (ADR-006)
+        # 2. Trigger Full Orchestrator Multi-Agent Appraisal Pipeline (ASE-54: stateful)
         coordinator = AgentCoordinator(ingestion_agent=agent)
-        appraisal_result = await coordinator.run_appraisal({
+        appraisal_result = await coordinator.run_appraisal_with_state({
             "file_path": temp_file_path,
             "institution_id": institution_id
         })
