@@ -396,6 +396,7 @@ class AgentCoordinator:
         import uuid
 
         # --- Resolve or create a case_id ---
+        case_needs_creation = False
         if case_id:
             db_record = get_case(case_id)
             if db_record and db_record["status"] == STATUS_COMPLETED:
@@ -405,11 +406,13 @@ class AgentCoordinator:
                 logger.info("[ASE-54] Resuming case %s from step '%s'.", case_id, db_record["current_step"])
                 state = LoanCaseState.from_db_record(db_record)
             else:
-                logger.warning("[ASE-54] case_id %s not found in DB. Starting fresh.", case_id)
-                case_id = None
-
-        if not case_id:
+                logger.warning("[ASE-54] case_id %s not found in DB. Will create it.", case_id)
+                case_needs_creation = True
+        else:
             case_id = f"CASE_{uuid.uuid4().hex[:12].upper()}"
+            case_needs_creation = True
+
+        if case_needs_creation:
             institution_id = application_data.get("institution_id", "DEFAULT")
             create_case(case_id, application_data, institution_id)
             state = LoanCaseState(case_id=case_id, institution_id=institution_id)

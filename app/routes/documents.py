@@ -9,7 +9,7 @@ import shutil
 import uuid
 import pikepdf
 from datetime import datetime
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Form
 from app.agents.input.document_ingestion import DocumentIngestionAgent
 from app.agents.security.document_security import DocumentSecurityAgent
 
@@ -173,10 +173,10 @@ MAX_FILE_SIZE = 20 * 1024 * 1024
 
 
 from app.agents.orchestration.coordinator import AgentCoordinator
-from app.database.database import save_appraisal
+from app.database.database import save_appraisal, get_case
 
 @router.post("/ingest/pdf")
-async def ingest_pdf_document(file: UploadFile = File(...), institution_id: str = "DEFAULT"):
+async def ingest_pdf_document(file: UploadFile = File(...), institution_id: str = "DEFAULT", case_id: str = Form(None)):
     """Upload a PDF document, trigger full multi-agent credit appraisal, and persist record."""
 
     # Validate filename
@@ -224,7 +224,7 @@ async def ingest_pdf_document(file: UploadFile = File(...), institution_id: str 
         appraisal_result = await coordinator.run_appraisal_with_state({
             "file_path": temp_file_path,
             "institution_id": institution_id
-        })
+        }, case_id=case_id)
 
         if isinstance(appraisal_result, dict):
             ingestion_data = appraisal_result.get("individual_agent_outputs", {}).get("ingestion", {})
@@ -296,3 +296,16 @@ async def ingest_pdf_document(file: UploadFile = File(...), institution_id: str 
                 os.remove(temp_file_path)
         except Exception:
             pass
+
+@router.get("/ingest/status/{case_id}")
+async def get_case_status(case_id: str):
+    """Fetch the real-time processing status of a credit appraisal case."""
+    db_record = get_case(case_id)
+    if not db_record:
+        raise HTTPException(status_code=404, detail="Case not found.")
+    
+    return {
+        "case_id": case_id,
+        "status": db_record.get("status"),
+        "current_step": db_record.get("current_step")
+    }
