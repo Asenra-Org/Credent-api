@@ -156,7 +156,7 @@ async def test_coordinator_dynamic_policy_evaluation():
 
 def test_upload_pdf_empty_file_rejected(client):
     """Failure Injection: 0-byte PDF upload must be rejected with HTTP 400."""
-    files = {"file": ("empty.pdf", b"", "application/pdf")}
+    files = {"financials": ("empty.pdf", b"", "application/pdf")}
     headers = {"X-Tenant-ID": "test_tenant", "Idempotency-Key": "test_idem_" + str(__import__("uuid").uuid4())}
     response = client.post("/api/v1/documents/ingest/pdf", files=files, headers=headers)
     assert response.status_code == 400
@@ -165,11 +165,11 @@ def test_upload_pdf_empty_file_rejected(client):
 def test_upload_pdf_oversized_file_rejected(client):
     """Failure Injection: > 20MB file upload must be rejected with HTTP 413."""
     large_buffer = b"0" * (21 * 1024 * 1024)
-    files = {"file": ("large.pdf", large_buffer, "application/pdf")}
+    files = {"financials": ("large.pdf", large_buffer, "application/pdf")}
     headers = {"X-Tenant-ID": "test_tenant", "Idempotency-Key": "test_idem_" + str(__import__("uuid").uuid4())}
     response = client.post("/api/v1/documents/ingest/pdf", files=files, headers=headers)
     assert response.status_code == 413
-    assert "exceeds" in response.json()["detail"].lower()
+    assert "too large" in response.json()["detail"].lower()
 
 @pytest.mark.asyncio
 async def test_supabase_outage_fallback_persistence():
@@ -265,11 +265,11 @@ def test_uuid_prefixed_upload_filenames_unique(client):
     dummy_pdf = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF"
     
     headers1 = {"X-Tenant-ID": "test_tenant", "Idempotency-Key": "test_idem_" + str(__import__("uuid").uuid4())}
-    files1 = {"file": ("statement.pdf", dummy_pdf, "application/pdf")}
+    files1 = {"financials": ("statement.pdf", dummy_pdf, "application/pdf")}
     res1 = client.post("/api/v1/documents/ingest/pdf", files=files1, headers=headers1)
 
     headers2 = {"X-Tenant-ID": "test_tenant", "Idempotency-Key": "test_idem_" + str(__import__("uuid").uuid4())}
-    files2 = {"file": ("statement.pdf", dummy_pdf, "application/pdf")}
+    files2 = {"financials": ("statement.pdf", dummy_pdf, "application/pdf")}
     res2 = client.post("/api/v1/documents/ingest/pdf", files=files2, headers=headers2)
 
     assert res1.status_code == 202

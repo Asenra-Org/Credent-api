@@ -1,7 +1,7 @@
 import json
 import uuid
 import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from sqlalchemy.orm import Session
 from app.core.exceptions import TenantIsolationError
 from app.models.ase52 import Case, OutboxEvent, Job, AgentExecution, Document
@@ -16,9 +16,8 @@ def create_case_with_outbox_event(
     total_loan_amount: float,
     company_type: str,
     deduplication_key: str,
-    case_id: Optional[str] = None,
-    document_id: Optional[str] = None,
-    storage_key: Optional[str] = None
+    documents_metadata: List[Dict[str, str]],
+    case_id: Optional[str] = None
 ) -> Case:
     """
     Creates a new Case and enqueues an outbox event in the EXACT SAME atomic database transaction.
@@ -28,7 +27,6 @@ def create_case_with_outbox_event(
         raise TenantIsolationError("Tenant identity parameter is required.")
         
     actual_case_id = case_id if case_id else f"case_{uuid.uuid4().hex}"
-    actual_doc_id = document_id if document_id else f"doc_{uuid.uuid4().hex}"
     job_id = f"JOB_{uuid.uuid4().hex}"
     exec_id = f"EXEC_{uuid.uuid4().hex}"
     event_id = f"evt_{uuid.uuid4().hex}"
@@ -42,18 +40,26 @@ def create_case_with_outbox_event(
     )
     session.add(case)
     
-    # 2. Create Document
-    if storage_key:
+    # 2. Create Documents
+    outbox_docs = []
+    for doc_meta in documents_metadata:
+        doc_id = f"doc_{uuid.uuid4().hex}"
         doc = Document(
-            id=actual_doc_id,
+            id=doc_id,
             case_id=actual_case_id,
             tenant_id=tenant_id,
-            filename=storage_key.split('/')[-1] if '/' in storage_key else storage_key,
-            storage_key=storage_key,
-            doc_role="REQUIRED",
+            filename=doc_meta.get("filename", ""),
+            storage_key=doc_meta.get("storage_key", ""),
+            doc_role=doc_meta.get("doc_role", "OPTIONAL"),
             status="ACTIVE"
         )
         session.add(doc)
+        outbox_docs.append({
+            "document_id": doc_id,
+            "storage_key": doc_meta.get("storage_key", ""),
+            "doc_role": doc_meta.get("doc_role", "OPTIONAL"),
+            "document_type": doc_meta.get("document_type", "unknown")
+        })
         
     # 3. Create Job
     job = Job(
@@ -81,8 +87,7 @@ def create_case_with_outbox_event(
         "tenant_id": tenant_id,
         "case_id": actual_case_id,
         "job_id": job_id,
-        "document_id": actual_doc_id if storage_key else None,
-        "storage_key": storage_key,
+        "documents": outbox_docs,
         "borrower_name": borrower_name,
         "total_loan_amount": total_loan_amount,
         "company_type": company_type

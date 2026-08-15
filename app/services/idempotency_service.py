@@ -116,6 +116,7 @@ class IdempotencyService:
             return False, None
         except Exception as e:
             # If IntegrityError occurs, it means a concurrent request already registered it.
+            logger.error(f"Failed to flush new idempotency record: {e}")
             self.session.rollback()
             raise IdempotencyInProgressError(f"A request with idempotency key '{idempotency_key}' is currently in progress.")
 

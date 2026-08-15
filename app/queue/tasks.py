@@ -143,30 +143,50 @@ def sweep_outbox():
 def credent_ingest(self, data: dict):
     logger.info("Running stage 1")
     storage = get_storage_service()
-    content = storage.download_file(data["storage_key"])
     
-    # Verify NO PDF BYTES in CELERY PAYLOAD -> content is fetched from storage!
-    temp_path = f"temp_{uuid.uuid4().hex}.pdf"
-    with open(temp_path, "wb") as f:
-        f.write(content)
+    documents = data.get("documents", [])
+    extracted_financials = {}
+    
+    for doc in documents:
+        storage_key = doc.get("storage_key")
+        doc_role = doc.get("doc_role", "OPTIONAL")
         
-    try:
-        # Phase 5/6 Invocation
-        agent = DocumentIngestionAgent()
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        ingestion_result = loop.run_until_complete(agent.ingest_pdf(temp_path))
-        extracted_financials = loop.run_until_complete(agent.parse_financial_statement(ingestion_result.get("text", "")))
-        loop.close()
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        if not storage_key:
+            continue
+            
+        try:
+            content = storage.download_file(tenant_id=data["tenant_id"], storage_key=storage_key)
+            
+            # Verify NO PDF BYTES in CELERY PAYLOAD -> content is fetched from storage!
+            temp_path = f"temp_{uuid.uuid4().hex}.pdf"
+            with open(temp_path, "wb") as f:
+                f.write(content)
+                
+            try:
+                # Phase 5/6 Invocation
+                agent = DocumentIngestionAgent()
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                ingestion_result = loop.run_until_complete(agent.ingest_pdf(temp_path))
+                parsed = loop.run_until_complete(agent.parse_financial_statement(ingestion_result.get("text", "")))
+                loop.close()
+                
+                if isinstance(parsed, dict):
+                    extracted_financials.update(parsed)
+            finally:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+        except Exception as e:
+            if doc_role == "REQUIRED":
+                raise Exception(f"REQUIRED document ingestion failed: {str(e)}") from e
+            else:
+                logger.warning(f"Optional document ingestion failed, continuing: {e}")
             
     # Save output to storage
     out_key = storage.upload_file(
         tenant_id=data["tenant_id"],
         case_id=data["case_id"],
-        document_id=data["document_id"],
+        document_id="aggregate",
         filename=f"stage_1_out_{uuid.uuid4().hex}.json",
         content=json.dumps(extracted_financials).encode(),
         content_type="application/json"

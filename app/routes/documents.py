@@ -191,7 +191,10 @@ def _dispatch_outbox_latency_optimization():
     except Exception as e:
         print(f"[BACKGROUND DISPATCH] Dispatch failed, relying on Beat sweeper: {e}")
 
-from typing import Any
+from typing import Any, List, Optional
+from fastapi import BackgroundTasks, Request, Depends, UploadFile, File, HTTPException
+import os
+import uuid
 
 def _get_api_db_session():
     with get_db_session() as session:
@@ -201,24 +204,68 @@ def _get_api_db_session():
 async def ingest_pdf_document(
     request: Request,
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
+    bank_statements: Optional[List[UploadFile]] = File(None),
+    gst_returns: Optional[List[UploadFile]] = File(None),
+    financials: Optional[List[UploadFile]] = File(None),
     sec_ctx: SecurityContext = Depends(get_security_context),
     session: Any = Depends(_get_api_db_session),
     storage: Any = Depends(get_storage_service)
 ):
     """Upload a PDF document and initialize asynchronous appraisal pipeline."""
 
-    # 1. Idempotency Check
+    # 1. Aggregate and sort documents
+    all_files = []
+    if financials:
+        for f in financials:
+            all_files.append((f, "REQUIRED", "financials"))
+    if bank_statements:
+        for f in bank_statements:
+            all_files.append((f, "REQUIRED", "bank_statements"))
+    if gst_returns:
+        for f in gst_returns:
+            all_files.append((f, "OPTIONAL", "gst_returns"))
+            
+    if not all_files:
+        raise HTTPException(status_code=400, detail="No files provided. At least one document is required.")
+        
+    sorted_files = sorted(all_files, key=lambda x: (x[0].filename or "", x[2]))
+    
+    cumulative_hash_content = b""
+    valid_docs = []
+    total_size = 0
+    
+    for f, role, dtype in sorted_files:
+        if not f.filename:
+            continue
+        if not f.filename.lower().endswith(".pdf"):
+            raise HTTPException(status_code=400, detail=f"File must be a PDF. Received: {f.filename}")
+            
+        content = await f.read()
+        if len(content) == 0:
+            raise HTTPException(status_code=400, detail=f"Uploaded file {f.filename} is empty.")
+            
+        if len(content) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=413, detail=f"File {f.filename} too large. Maximum size is {MAX_FILE_SIZE // (1024*1024)}MB.")
+            
+        total_size += len(content)
+        if total_size > MAX_FILE_SIZE:
+            raise HTTPException(status_code=413, detail=f"Aggregate payload too large. Maximum total size is {MAX_FILE_SIZE // (1024*1024)}MB.")
+            
+        cumulative_hash_content += content
+        valid_docs.append((f, role, dtype, content))
+        
+    if not valid_docs:
+        raise HTTPException(status_code=400, detail="No valid files provided.")
+
+    # 2. Idempotency Check
     idempotency_key = request.headers.get("Idempotency-Key")
     idemp_service = IdempotencyService(session)
-    
     request_hash = ""
+    
     if idempotency_key:
         from app.services.idempotency_service import PayloadTooLargeError
-        content = await file.read()
-        await file.seek(0)
         try:
-            request_hash = compute_request_fingerprint("POST", "/api/v1/documents/ingest/pdf", content)
+            request_hash = compute_request_fingerprint("POST", "/api/v1/documents/ingest/pdf", cumulative_hash_content)
             is_replayed, cached_response = idemp_service.process_idempotent_request(
                 tenant_id=sec_ctx.tenant_id,
                 idempotency_key=idempotency_key,
@@ -233,47 +280,50 @@ async def ingest_pdf_document(
         except PayloadTooLargeError as e:
             raise HTTPException(status_code=413, detail=str(e))
 
-    # Validate filename
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No filename provided.")
-
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="File must be a PDF. Received: " + file.filename)
-
-    # Sanitize filename (remove path traversal attempts)
-    safe_filename = os.path.basename(file.filename).replace("..", "").replace("/", "").replace("\\", "")
-    if not safe_filename:
-        safe_filename = "uploaded_document.pdf"
-
-    # Read and validate file size
-    content = await file.read()
-    if len(content) == 0:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-    if len(content) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail=f"File too large. Maximum size is {MAX_FILE_SIZE // (1024*1024)}MB.")
-
-    # 2. Storage Upload (Fail-Closed Boundary)
-    file_uuid = uuid.uuid4().hex
-    unique_filename = f"{file_uuid}_{safe_filename}"
-    
-    # We pass placeholders for case_id/doc_id to the storage service as they haven't been created yet.
+    # 3. Storage Upload (Fail-Closed Boundary for REQUIRED docs)
     case_id = f"case_{uuid.uuid4().hex}"
-    doc_id = f"doc_{uuid.uuid4().hex}"
+    documents_metadata = []
     
-    try:
-        storage_key = storage.upload_file(
-            tenant_id=sec_ctx.tenant_id,
-            case_id=case_id,
-            document_id=doc_id,
-            filename=unique_filename,
-            content=content,
-            content_type="application/pdf"
-        )
-    except Exception as e:
-        print(f"[STORAGE ERROR] Failed to upload {safe_filename}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to persist document to secure storage.")
+    for f, role, dtype, content in valid_docs:
+        safe_filename = os.path.basename(f.filename).replace("..", "").replace("/", "").replace("\\", "")
+        if not safe_filename:
+            safe_filename = "uploaded_document.pdf"
 
-    # 3. Atomic Case Creation + Outbox Event
+        file_uuid = uuid.uuid4().hex
+        unique_filename = f"{file_uuid}_{safe_filename}"
+        doc_id = f"doc_{uuid.uuid4().hex}"
+        
+        try:
+            storage_key = storage.upload_file(
+                tenant_id=sec_ctx.tenant_id,
+                case_id=case_id,
+                document_id=doc_id,
+                filename=unique_filename,
+                content=content,
+                content_type="application/pdf"
+            )
+            documents_metadata.append({
+                "storage_key": storage_key,
+                "doc_role": role,
+                "document_type": dtype,
+                "filename": safe_filename
+            })
+        except Exception as e:
+            print(f"[STORAGE ERROR] Failed to upload {safe_filename}: {e}")
+            if role == "REQUIRED":
+                for meta in documents_metadata:
+                    try:
+                        storage.delete_file(tenant_id=sec_ctx.tenant_id, storage_key=meta["storage_key"])
+                    except:
+                        pass
+                raise HTTPException(status_code=500, detail=f"Failed to persist REQUIRED document {safe_filename} to secure storage.")
+            else:
+                print(f"[STORAGE WARN] Skipping OPTIONAL document {safe_filename} due to storage error.")
+                
+    if not documents_metadata:
+        raise HTTPException(status_code=500, detail="All document uploads failed.")
+
+    # 4. Atomic Case Creation + Outbox Event
     try:
         case = create_case_with_outbox_event(
             session=session,
@@ -282,9 +332,8 @@ async def ingest_pdf_document(
             total_loan_amount=0.0,
             company_type="UNKNOWN",
             deduplication_key=idempotency_key if idempotency_key else f"dedup_{case_id}",
-            case_id=case_id,
-            document_id=doc_id,
-            storage_key=storage_key
+            documents_metadata=documents_metadata,
+            case_id=case_id
         )
         
         # We don't manually session.commit() here, because the `get_db_session` dependency manages it.
@@ -293,9 +342,14 @@ async def ingest_pdf_document(
         
     except Exception as e:
         print(f"[DB ERROR] Workflow transaction failed: {e}")
+        for meta in documents_metadata:
+            try:
+                storage.delete_file(tenant_id=sec_ctx.tenant_id, storage_key=meta["storage_key"])
+            except:
+                pass
         raise HTTPException(status_code=500, detail="Failed to initialize appraisal workflow.")
 
-    # 4. Construct HTTP 202 Response
+    # 5. Construct HTTP 202 Response
     response_body = {
         "status": "processing",
         "message": "Document ingested successfully. Appraisal pipeline initialized.",
