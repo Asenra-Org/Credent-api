@@ -37,9 +37,17 @@ def execute_with_boundary(stage_name: str, next_stage: str = None):
                 return False
 
             execution_id = data.get("execution_id")
+            
+            logger.error(f"DEBUG: Payload string is: {payload}")
+            logger.error(f"DEBUG: Parsed data is: {data}")
+            
             if not execution_id:
-                logger.error("No execution_id in payload")
-                return False
+                # Fallback to check if it's inside 'data' key due to some double-wrapping
+                if "data" in data and isinstance(data["data"], dict) and "execution_id" in data["data"]:
+                    execution_id = data["data"]["execution_id"]
+                else:
+                    logger.error("No execution_id in payload")
+                    return False
 
             session_factory = get_session_factory()
             with session_factory() as session:
@@ -59,7 +67,8 @@ def execute_with_boundary(stage_name: str, next_stage: str = None):
 
             try:
                 # Run business logic inside its own session logic
-                result = business_logic_fn(self, data)
+                business_data = data.get("data", data) if isinstance(data, dict) else data
+                result = business_logic_fn(self, business_data)
                 
                 with session_factory() as session:
                     execution = session.query(AgentExecution).filter_by(id=execution_id).first()
@@ -91,8 +100,12 @@ def execute_with_boundary(stage_name: str, next_stage: str = None):
                         session.add(next_execution)
                         
                         next_payload = data.copy()
-                        next_payload["job_id"] = next_job.id
-                        next_payload["execution_id"] = next_execution.id
+                        if "data" in next_payload and isinstance(next_payload["data"], dict):
+                            next_payload["data"]["job_id"] = next_job.id
+                            next_payload["data"]["execution_id"] = next_execution.id
+                        else:
+                            next_payload["job_id"] = next_job.id
+                            next_payload["execution_id"] = next_execution.id
                         
                         # Save outbox event for next stage
                         outbox = OutboxEvent(

@@ -87,6 +87,7 @@ def create_case_with_outbox_event(
         "tenant_id": tenant_id,
         "case_id": actual_case_id,
         "job_id": job_id,
+        "execution_id": exec_id,
         "documents": outbox_docs,
         "borrower_name": borrower_name,
         "total_loan_amount": total_loan_amount,
