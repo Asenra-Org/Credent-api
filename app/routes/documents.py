@@ -171,12 +171,67 @@ os.makedirs("temp_uploads", exist_ok=True)
 MAX_FILE_SIZE = 20 * 1024 * 1024
 
 
-from app.agents.orchestration.coordinator import AgentCoordinator
-from app.database.database import save_appraisal
+from fastapi import BackgroundTasks, Request, Depends
+from app.core.security import get_security_context, SecurityContext
+from app.database.session import get_db_session
+from sqlalchemy.orm import Session
+from app.services.storage import get_storage_service, StorageService
+from app.services.case_service import create_case_with_outbox_event
+from app.services.outbox_dispatcher import OutboxDispatcher, CeleryTransportAdapter
+from app.queue.celery_app import celery_app
+from app.services.idempotency_service import IdempotencyService, compute_request_fingerprint, IdempotencyInProgressError, IdempotencyConflictError
 
-@router.post("/ingest/pdf")
-async def ingest_pdf_document(file: UploadFile = File(...), institution_id: str = "DEFAULT"):
-    """Upload a PDF document, trigger full multi-agent credit appraisal, and persist record."""
+def _dispatch_outbox_latency_optimization():
+    """FastAPI BackgroundTask for immediate outbox dispatch (latency optimization only)."""
+    try:
+        from app.database.session import get_session_factory
+        transport = CeleryTransportAdapter(celery_app)
+        dispatcher = OutboxDispatcher(get_session_factory(), transport)
+        dispatcher.dispatch_batch()
+    except Exception as e:
+        print(f"[BACKGROUND DISPATCH] Dispatch failed, relying on Beat sweeper: {e}")
+
+from typing import Any
+
+def _get_api_db_session():
+    with get_db_session() as session:
+        yield session
+
+@router.post("/ingest/pdf", status_code=202)
+async def ingest_pdf_document(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    sec_ctx: SecurityContext = Depends(get_security_context),
+    session: Any = Depends(_get_api_db_session),
+    storage: Any = Depends(get_storage_service)
+):
+    """Upload a PDF document and initialize asynchronous appraisal pipeline."""
+
+    # 1. Idempotency Check
+    idempotency_key = request.headers.get("Idempotency-Key")
+    idemp_service = IdempotencyService(session)
+    
+    request_hash = ""
+    if idempotency_key:
+        from app.services.idempotency_service import PayloadTooLargeError
+        content = await file.read()
+        await file.seek(0)
+        try:
+            request_hash = compute_request_fingerprint("POST", "/api/v1/documents/ingest/pdf", content)
+            is_replayed, cached_response = idemp_service.process_idempotent_request(
+                tenant_id=sec_ctx.tenant_id,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash
+            )
+            if is_replayed:
+                return cached_response
+        except IdempotencyInProgressError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except IdempotencyConflictError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except PayloadTooLargeError as e:
+            raise HTTPException(status_code=413, detail=str(e))
 
     # Validate filename
     if not file.filename:
@@ -190,98 +245,74 @@ async def ingest_pdf_document(file: UploadFile = File(...), institution_id: str 
     if not safe_filename:
         safe_filename = "uploaded_document.pdf"
 
+    # Read and validate file size
+    content = await file.read()
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail=f"File too large. Maximum size is {MAX_FILE_SIZE // (1024*1024)}MB.")
+
+    # 2. Storage Upload (Fail-Closed Boundary)
     file_uuid = uuid.uuid4().hex
     unique_filename = f"{file_uuid}_{safe_filename}"
-    temp_file_path = os.path.join("temp_uploads", unique_filename)
-
+    
+    # We pass placeholders for case_id/doc_id to the storage service as they haven't been created yet.
+    case_id = f"case_{uuid.uuid4().hex}"
+    doc_id = f"doc_{uuid.uuid4().hex}"
+    
     try:
-        # Read and validate file size
-        content = await file.read()
-        if len(content) == 0:
-            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-        if len(content) > MAX_FILE_SIZE:
-            raise HTTPException(status_code=413, detail=f"File too large. Maximum size is {MAX_FILE_SIZE // (1024*1024)}MB.")
-
-        # Save uploaded file temporarily
-        with open(temp_file_path, "wb") as buffer:
-            buffer.write(content)
-
-        # 1. Run Integrity Scan (Forensics)
-        forensics = run_pdf_forensics(temp_file_path)
-
-        # 2. Trigger Full Orchestrator Multi-Agent Appraisal Pipeline (ADR-006)
-        coordinator = AgentCoordinator(ingestion_agent=agent)
-        appraisal_result = await coordinator.run_appraisal({
-            "file_path": temp_file_path,
-            "institution_id": institution_id
-        })
-
-        if isinstance(appraisal_result, dict):
-            ingestion_data = appraisal_result.get("individual_agent_outputs", {}).get("ingestion", {})
-            financial_data = appraisal_result.get("individual_agent_outputs", {}).get("financial_health", {})
-            
-            # Base score resolution: prefer ingestion_data.base_score, fallback to financial_health_score
-            raw_base_score = ingestion_data.get("base_score") if isinstance(ingestion_data, dict) else None
-            base_score = raw_base_score if raw_base_score is not None else financial_data.get("financial_health_score", 50)
-
-            # Apply forensics penalty (AI-A-W4) from origin/main
-            forensics_penalty = apply_forensics_penalty(
-                base_score=base_score,
-                forensics_result=forensics,
-            )
-
-            # If penalty applied or score adjusted, set adjusted_score on ingestion and financial outputs
-            adjusted = forensics_penalty.get("adjusted_score", base_score)
-            if isinstance(financial_data, dict):
-                financial_data["financial_health_score"] = adjusted
-            if isinstance(ingestion_data, dict):
-                ingestion_data["base_score"] = adjusted
-
-            # Attach backwards-compatible top-level keys for legacy callers & tests
-            appraisal_result["forensics"] = forensics
-            appraisal_result["forensics_penalty"] = forensics_penalty
-            appraisal_result["filename"] = safe_filename
-            appraisal_result["tables_found"] = ingestion_data.get("tables_count", 0)
-            appraisal_result["ai_analysis"] = ingestion_data
-
-            # 3. Save appraisal results to Supabase (Primary) and SQLite (Fallback)
-            try:
-                save_appraisal({
-                    "company_id": f"COMP_{int(datetime.now().timestamp())}",
-                    "company_name": ingestion_data.get("company_name", "Unknown Entity"),
-                    "sector": appraisal_result.get("individual_agent_outputs", {}).get("sector_context", {}).get("sector", "N/A"),
-                    "revenue": financial_data.get("metrics", {}).get("revenue", 0.0),
-                    "debt": financial_data.get("metrics", {}).get("total_debt", 0.0),
-                    "base_score": base_score,
-                    "adjusted_score": forensics_penalty.get("adjusted_score", base_score),
-                    "decision": appraisal_result.get("combined_decision", {}).get("decision", "PENDING"),
-                    "recommended_loan_amount": appraisal_result.get("combined_decision", {}).get("recommended_loan_amount", "0"),
-                    "recommended_interest_rate": appraisal_result.get("combined_decision", {}).get("recommended_interest_rate", "N/A"),
-                    "decision_rationale": appraisal_result.get("combined_decision", {}).get("decision_rationale", ""),
-                    "cam_report": appraisal_result.get("combined_decision", {}),
-                    "web_research": {},
-                    "integrity_flags": appraisal_result.get("individual_agent_outputs", {}).get("integrity_check", {}),
-                    "raw_document_data": ingestion_data,
-                    "financial_ratios": financial_data.get("ratios", {}),
-                    "management_score": appraisal_result.get("individual_agent_outputs", {}).get("management_quality", {}).get("management_score", 0.0),
-                    "promoter_analysis": appraisal_result.get("individual_agent_outputs", {}).get("management_quality", {}).get("promoter_analysis", []),
-                    "governance_assessment": appraisal_result.get("individual_agent_outputs", {}).get("management_quality", {}).get("governance_assessment", {}),
-                    "institution_id": institution_id
-                })
-            except Exception as save_err:
-                print(f"[ROUTE /ingest/pdf] Persistence error: {save_err}")
-
-        return appraisal_result
-
-    except HTTPException:
-        raise  # Re-raise HTTP exceptions as-is
+        storage_key = storage.upload_file(
+            tenant_id=sec_ctx.tenant_id,
+            case_id=case_id,
+            document_id=doc_id,
+            filename=unique_filename,
+            content=content,
+            content_type="application/pdf"
+        )
     except Exception as e:
-        print(f"[ROUTE /ingest/pdf] Unexpected error: {e}")
-        raise HTTPException(status_code=500, detail=f"Document processing failed: {str(e)}")
-    finally:
-        # Always clean up temp file
-        try:
-            if os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
-        except Exception:
-            pass
+        print(f"[STORAGE ERROR] Failed to upload {safe_filename}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to persist document to secure storage.")
+
+    # 3. Atomic Case Creation + Outbox Event
+    try:
+        case = create_case_with_outbox_event(
+            session=session,
+            tenant_id=sec_ctx.tenant_id,
+            borrower_name="Unknown",  # To be extracted by async pipeline
+            total_loan_amount=0.0,
+            company_type="UNKNOWN",
+            deduplication_key=idempotency_key if idempotency_key else f"dedup_{case_id}",
+            case_id=case_id,
+            document_id=doc_id,
+            storage_key=storage_key
+        )
+        
+        # We don't manually session.commit() here, because the `get_db_session` dependency manages it.
+        # But we must flush to ensure idempotency records and case records are written.
+        session.flush()
+        
+    except Exception as e:
+        print(f"[DB ERROR] Workflow transaction failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to initialize appraisal workflow.")
+
+    # 4. Construct HTTP 202 Response
+    response_body = {
+        "status": "processing",
+        "message": "Document ingested successfully. Appraisal pipeline initialized.",
+        "case_id": case.id,
+        "job_id": case.jobs[0].id if case.jobs else None,
+        "correlation_id": sec_ctx.correlation_id
+    }
+
+    if idempotency_key:
+        idemp_service.store_response(
+            tenant_id=sec_ctx.tenant_id,
+            idempotency_key=idempotency_key,
+            status_code=202,
+            response_body=response_body
+        )
+
+    # Trigger Latency Optimization (wake Celery beat instantly)
+    background_tasks.add_task(_dispatch_outbox_latency_optimization)
+
+    return response_body

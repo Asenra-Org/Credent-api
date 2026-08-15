@@ -1,0 +1,2 @@
+class TenantIsolationError(Exception):
+    pass

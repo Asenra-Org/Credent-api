@@ -14,7 +14,8 @@ def test_empty_file_upload(client):
     """
     # Endpoint expects multipart/form-data with a 'file'
     files = {"file": ("empty.pdf", b"", "application/pdf")}
-    response = client.post("/api/v1/documents/ingest/pdf", files=files)
+    headers = {"X-Tenant-ID": "test_tenant", "Idempotency-Key": "test_idem_" + str(__import__("uuid").uuid4())}
+    response = client.post("/api/v1/documents/ingest/pdf", files=files, headers=headers)
     
     # Based on our routes/documents.py logic, it should return 400 with a specific message
     assert response.status_code == 400

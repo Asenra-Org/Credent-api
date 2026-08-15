@@ -16,6 +16,16 @@ from app.database.database import init_db, DB_PATH
 def setup_test_environment():
     """Ensure test database is properly initialized prior to test suite execution."""
     init_db()
+    # Add a default tenant for integration tests relying on X-Tenant-ID
+    try:
+        from app.database.session import get_session_factory
+        from app.models.ase52 import Tenant
+        with get_session_factory()() as session:
+            if not session.query(Tenant).filter_by(id="test_tenant").first():
+                session.add(Tenant(id="test_tenant", name="Test Tenant"))
+                session.commit()
+    except Exception:
+        pass
     yield
 
 @pytest.fixture
