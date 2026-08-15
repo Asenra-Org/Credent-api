@@ -1,9 +1,18 @@
+from unittest.mock import patch
+
 import pytest
 import uuid
 from fastapi.testclient import TestClient
 from app.main import app
 
 client = TestClient(app)
+
+@pytest.fixture(autouse=True)
+def mock_celery_dispatch():
+    with patch('app.queue.celery_app.celery_app.send_task') as mock_send:
+        mock_send.return_value = type('obj', (object,), {'id': 'dummy'})
+        yield mock_send
+
 
 def test_upload_missing_all_fields():
     response = client.post("/api/v1/documents/ingest/pdf", headers={"X-Tenant-ID": "test_tenant"})

@@ -20,6 +20,17 @@ from app.agents.analysis.sector_context import SectorContextAgent
 from app.agents.analysis.integrity_verification import IntegrityVerificationAgent
 from app.agents.orchestration.cam_generator import CAMGeneratorAgent
 from app.agents.orchestration.coordinator import AgentCoordinator
+from app.services.storage import StorageTimeoutError, StorageProviderUnavailableError
+import redis
+import psycopg2
+
+def is_transient_error(e: Exception) -> bool:
+    return isinstance(e, (
+        StorageTimeoutError,
+        StorageProviderUnavailableError,
+        redis.exceptions.ConnectionError,
+        psycopg2.OperationalError
+    ))
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +48,10 @@ def execute_with_boundary(stage_name: str, next_stage: str = None):
                 return False
 
             execution_id = data.get("execution_id")
-            
+
             logger.error(f"DEBUG: Payload string is: {payload}")
             logger.error(f"DEBUG: Parsed data is: {data}")
-            
+
             if not execution_id:
                 # Fallback to check if it's inside 'data' key due to some double-wrapping
                 if "data" in data and isinstance(data["data"], dict) and "execution_id" in data["data"]:
@@ -55,11 +66,11 @@ def execute_with_boundary(stage_name: str, next_stage: str = None):
                 if not execution:
                     logger.error(f"Execution {execution_id} not found")
                     return False
-                    
+
                 if execution.status in ["COMPLETED", "SUCCESS", "FAILED", "TIMED_OUT", "SKIPPED"]:
                     logger.info(f"Execution {execution_id} already in terminal state {execution.status}. Idempotent return.")
                     return True
-                    
+
                 execution.status = "RUNNING"
                 execution.celery_task_id = self.request.id
                 execution.started_at = datetime.now(timezone.utc)
@@ -69,16 +80,16 @@ def execute_with_boundary(stage_name: str, next_stage: str = None):
                 # Run business logic inside its own session logic
                 business_data = data.get("data", data) if isinstance(data, dict) else data
                 result = business_logic_fn(self, business_data)
-                
+
                 with session_factory() as session:
                     execution = session.query(AgentExecution).filter_by(id=execution_id).first()
                     execution.status = "SUCCESS"
                     execution.completed_at = datetime.now(timezone.utc)
                     if isinstance(result, str):
                         execution.output_storage_key = result
-                        
+
                     job = session.query(Job).filter_by(id=execution.job_id).first()
-                    
+
                     if next_stage:
                         # Create next job and execution
                         next_job = Job(
@@ -98,7 +109,7 @@ def execute_with_boundary(stage_name: str, next_stage: str = None):
                         )
                         session.add(next_job)
                         session.add(next_execution)
-                        
+
                         next_payload = data.copy()
                         if "data" in next_payload and isinstance(next_payload["data"], dict):
                             next_payload["data"]["job_id"] = next_job.id
@@ -106,7 +117,7 @@ def execute_with_boundary(stage_name: str, next_stage: str = None):
                         else:
                             next_payload["job_id"] = next_job.id
                             next_payload["execution_id"] = next_execution.id
-                        
+
                         # Save outbox event for next stage
                         outbox = OutboxEvent(
                             id=f"evt_{uuid.uuid4().hex}",
@@ -118,7 +129,7 @@ def execute_with_boundary(stage_name: str, next_stage: str = None):
                             status="PENDING"
                         )
                         session.add(outbox)
-                        
+
                     session.commit()
                 return True
             except Exception as e:
@@ -126,18 +137,22 @@ def execute_with_boundary(stage_name: str, next_stage: str = None):
                 with session_factory() as session:
                     execution = session.query(AgentExecution).filter_by(id=execution_id).first()
                     execution.error_message = str(e)
-                    
-                    # 4 max retries
-                    if execution.attempt_number >= 4:
-                        execution.status = "FAILED"
+
+                    if is_transient_error(e):
+                        if execution.attempt_number >= 4:
+                            execution.status = "FAILED"
+                        else:
+                            execution.status = "RETRY_AUTHORIZED"
+                            execution.attempt_number += 1
                     else:
-                        execution.status = "RETRY_AUTHORIZED"
-                        execution.attempt_number += 1
-                        
+                        execution.status = "FAILED"
+
                     session.commit()
-                    
+
                 if execution.status == "RETRY_AUTHORIZED":
-                    raise self.retry(exc=e)
+                    retry_index = execution.attempt_number - 2
+                    delay = 60 * (2 ** retry_index)
+                    raise self.retry(exc=e, countdown=delay)
                 return False
         return wrapper
     return decorator
@@ -156,34 +171,38 @@ def sweep_outbox():
 def credent_ingest(self, data: dict):
     logger.info("Running stage 1")
     storage = get_storage_service()
-    
+
     documents = data.get("documents", [])
     extracted_financials = {}
-    
+
     for doc in documents:
         storage_key = doc.get("storage_key")
         doc_role = doc.get("doc_role", "OPTIONAL")
-        
+
         if not storage_key:
             continue
-            
+
         try:
             content = storage.download_file(tenant_id=data["tenant_id"], storage_key=storage_key)
-            
+
             # Verify NO PDF BYTES in CELERY PAYLOAD -> content is fetched from storage!
             temp_path = f"temp_{uuid.uuid4().hex}.pdf"
             with open(temp_path, "wb") as f:
                 f.write(content)
-                
+
             try:
                 # Phase 5/6 Invocation
                 agent = DocumentIngestionAgent()
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 ingestion_result = loop.run_until_complete(agent.ingest_pdf(temp_path))
+
+                if ingestion_result.get("error"):
+                    raise ValueError(f"Parsing Failure: {ingestion_result['error']}")
+
                 parsed = loop.run_until_complete(agent.parse_financial_statement(ingestion_result.get("text", "")))
                 loop.close()
-                
+
                 if isinstance(parsed, dict):
                     extracted_financials.update(parsed)
             finally:
@@ -191,10 +210,12 @@ def credent_ingest(self, data: dict):
                     os.remove(temp_path)
         except Exception as e:
             if doc_role == "REQUIRED":
-                raise Exception(f"REQUIRED document ingestion failed: {str(e)}") from e
+                raise ValueError(f"REQUIRED document ingestion failed: {str(e)}") from e
             else:
+                warning_msg = {"document": storage_key, "role": "OPTIONAL", "reason": f"Parsing Failure: {str(e)}"}
                 logger.warning(f"Optional document ingestion failed, continuing: {e}")
-            
+                data.setdefault("audit_warnings", []).append(warning_msg)
+
     # Save output to storage
     out_key = storage.upload_file(
         tenant_id=data["tenant_id"],
@@ -216,17 +237,17 @@ def credent_analysis(self, data: dict):
         prev_job = session.query(Job).filter_by(case_id=data["case_id"], stage_name="stage_1_ingest").first()
         prev_exec = session.query(AgentExecution).filter_by(job_id=prev_job.id, status="SUCCESS").first()
         stage_1_key = prev_exec.output_storage_key
-        
+
     storage = get_storage_service()
     stage_1_data = json.loads(storage.download_file(stage_1_key))
-    
+
     # Phase 5/6 Invocation
     fin_agent = FinancialHealthAgent()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     fin_res = loop.run_until_complete(fin_agent.analyze(stage_1_data))
     loop.close()
-    
+
     # Save output to storage
     out_key = storage.upload_file(
         tenant_id=data["tenant_id"],
@@ -243,13 +264,37 @@ def credent_analysis(self, data: dict):
 def credent_synthesis(self, data: dict):
     logger.info("Running stage 3")
     storage = get_storage_service()
-    
+
     # Phase 5/6 Invocation
     # The requirement specifically mentions "AgentCoordinator" being invoked!
-    # Let's mock a call to it or call it properly.
     coord = AgentCoordinator()
-    
-    # Simulate saving CAM and AppraisalResult
+
+    # Mocking cam_payload logic because tasks.py in Phase 7 mocks this
+    cam_payload = {
+        "five_cs": {
+            "character": {"text": "dummy", "citations": []},
+            "capacity": {"text": "dummy", "citations": []},
+            "capital": {"text": "dummy", "citations": []},
+            "collateral": {"text": "dummy", "citations": []},
+            "conditions": {"text": "dummy", "citations": []}
+        },
+        "decision": "APPROVED",
+        "recommended_loan_amount": "0",
+        "recommended_interest_rate": "0",
+        "decision_rationale": "mock"
+    }
+
+    cam_payload["audit_warnings"] = data.get("audit_warnings", [])
+
+    cam_report_storage_key = storage.upload_file(
+        tenant_id=data["tenant_id"],
+        case_id=data["case_id"],
+        document_id="aggregate",
+        filename=f"cam_report_{uuid.uuid4().hex}.json",
+        content=json.dumps(cam_payload).encode(),
+        content_type="application/json"
+    )
+
     session_factory = get_session_factory()
     with session_factory() as session:
         res = AppraisalResult(
@@ -259,12 +304,12 @@ def credent_synthesis(self, data: dict):
             base_score=50,
             adjusted_score=50,
             decision="APPROVED",
-            cam_report_storage_key="dummy_cam_key"
+            cam_report_storage_key=cam_report_storage_key
         )
         session.add(res)
         session.commit()
-        
-    return "dummy_cam_key"
+
+    return cam_report_storage_key
 
 @celery_app.task(name="app.queue.tasks.ping")
 def ping(payload: str = None):
