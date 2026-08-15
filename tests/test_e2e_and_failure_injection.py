@@ -264,7 +264,7 @@ def test_uuid_prefixed_upload_filenames_unique(client):
     # Dummy minimal valid PDF bytes
     dummy_pdf = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF"
 
-    async def mock_run_appraisal(self, payload):
+    async def mock_run_appraisal(self, payload, case_id=None):
         captured_paths.append(payload["file_path"])
         return {
             "status": "success",
