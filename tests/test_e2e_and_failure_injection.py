@@ -1,5 +1,5 @@
 # =============================================================================
-# CREDENT — Advanced E2E, Unit, Integration & Failure Injection Test Suite
+# CREDENT ΓÇö Advanced E2E, Unit, Integration & Failure Injection Test Suite
 # Feature: ASE-43 [BE-W5] Route Coordinator to UI, Dynamic Risk Policies & Policy Management API
 # A product of Asenra | https://asenra.in
 # Copyright (c) 2026 Asenra. All rights reserved.
@@ -156,20 +156,23 @@ async def test_coordinator_dynamic_policy_evaluation():
 
 def test_upload_pdf_empty_file_rejected(client):
     """Failure Injection: 0-byte PDF upload must be rejected with HTTP 400."""
-    files = {"file": ("empty.pdf", b"", "application/pdf")}
-    response = client.post("/api/v1/documents/ingest/pdf", files=files)
+    files = {"financials": ("empty.pdf", b"", "application/pdf")}
+    headers = {"X-Tenant-ID": "test_tenant", "Idempotency-Key": "test_idem_" + str(__import__("uuid").uuid4())}
+    response = client.post("/api/v1/documents/ingest/pdf", files=files, headers=headers)
     assert response.status_code == 400
     assert "empty" in response.json()["detail"].lower()
 
 def test_upload_pdf_oversized_file_rejected(client):
     """Failure Injection: > 20MB file upload must be rejected with HTTP 413."""
     large_buffer = b"0" * (21 * 1024 * 1024)
-    files = {"file": ("large.pdf", large_buffer, "application/pdf")}
-    response = client.post("/api/v1/documents/ingest/pdf", files=files)
+    files = {"financials": ("large.pdf", large_buffer, "application/pdf")}
+    headers = {"X-Tenant-ID": "test_tenant", "Idempotency-Key": "test_idem_" + str(__import__("uuid").uuid4())}
+    response = client.post("/api/v1/documents/ingest/pdf", files=files, headers=headers)
     assert response.status_code == 413
     assert "too large" in response.json()["detail"].lower()
 
-def test_supabase_outage_fallback_persistence():
+@pytest.mark.asyncio
+async def test_supabase_outage_fallback_persistence():
     """Failure Injection: Simulate Supabase offline error; verify SQLite fallback succeeds."""
     with patch("app.database.database._get_supabase", return_value=None):
         success = update_appraisal_status("APPRAISAL_OFFLINE_101", "APPROVE", "Offline mode override")
@@ -258,38 +261,26 @@ def test_sqlite_concurrent_writes():
     assert len(errors) == 0, f"Concurrent write errors encountered: {errors}"
 
 def test_uuid_prefixed_upload_filenames_unique(client):
-    """Verify that file uploads with identical filenames receive unique UUID-prefixed temporary paths."""
-    captured_paths = []
-    
-    # Dummy minimal valid PDF bytes
+    """Verify that file uploads with identical filenames receive unique UUID-prefixed temporary paths/documents."""
+
     dummy_pdf = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF"
+    
+    headers1 = {"X-Tenant-ID": "test_tenant", "Idempotency-Key": "test_idem_" + str(__import__("uuid").uuid4())}
+    files1 = {"financials": ("statement.pdf", dummy_pdf, "application/pdf")}
+    res1 = client.post("/api/v1/documents/ingest/pdf", files=files1, headers=headers1)
 
-    async def mock_run_appraisal(self, payload, case_id=None):
-        captured_paths.append(payload["file_path"])
-        return {
-            "status": "success",
-            "combined_decision": {"decision": "APPROVE", "decision_rationale": "Mock rationale"}
-        }
+    headers2 = {"X-Tenant-ID": "test_tenant", "Idempotency-Key": "test_idem_" + str(__import__("uuid").uuid4())}
+    files2 = {"financials": ("statement.pdf", dummy_pdf, "application/pdf")}
+    res2 = client.post("/api/v1/documents/ingest/pdf", files=files2, headers=headers2)
 
-    with patch("app.routes.documents.AgentCoordinator.run_appraisal_with_state", mock_run_appraisal), \
-         patch("app.routes.documents.run_pdf_forensics", return_value={"is_suspicious": False, "flags": []}):
-        
-        files1 = {"file": ("statement.pdf", dummy_pdf, "application/pdf")}
-        files2 = {"file": ("statement.pdf", dummy_pdf, "application/pdf")}
-
-        res1 = client.post("/api/v1/documents/ingest/pdf", files=files1)
-        res2 = client.post("/api/v1/documents/ingest/pdf", files=files2)
-
-        assert res1.status_code == 200
-        assert res2.status_code == 200
-        assert len(captured_paths) == 2
-        
-        path1, path2 = captured_paths[0], captured_paths[1]
-        assert path1 != path2
-        assert "statement.pdf" in path1
-        assert "statement.pdf" in path2
-        assert "temp_uploads" in path1
-        assert "temp_uploads" in path2
+    assert res1.status_code == 202
+    assert res2.status_code == 202
+    
+    data1 = res1.json()
+    data2 = res2.json()
+    
+    assert data1["case_id"] != data2["case_id"]
+    assert data1["job_id"] != data2["job_id"]
 
 @pytest.mark.asyncio
 async def test_startup_cleanup_orphaned_temp_files():

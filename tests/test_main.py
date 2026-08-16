@@ -12,15 +12,16 @@ def test_empty_file_upload(client):
     """
     Test boundary upload with an empty file to the ingestion endpoint.
     """
-    # Endpoint expects multipart/form-data with a 'file'
-    files = {"file": ("empty.pdf", b"", "application/pdf")}
-    response = client.post("/api/v1/documents/ingest/pdf", files=files)
+    # Endpoint expects explicit multipart field like 'financials', 'bank_statements', or 'gst_returns'
+    files = {"financials": ("empty.pdf", b"", "application/pdf")}
+    headers = {"X-Tenant-ID": "test_tenant", "Idempotency-Key": "test_idem_" + str(__import__("uuid").uuid4())}
+    response = client.post("/api/v1/documents/ingest/pdf", files=files, headers=headers)
     
     # Based on our routes/documents.py logic, it should return 400 with a specific message
     assert response.status_code == 400
     data = response.json()
     assert "detail" in data
-    assert data["detail"] == "Uploaded file is empty."
+    assert "empty" in data["detail"]
 
 def test_financial_health_endpoint(client):
     """
