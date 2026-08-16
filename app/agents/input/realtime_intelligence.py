@@ -8,7 +8,7 @@ import os
 import json
 import re
 from langchain_groq import ChatGroq
-from langchain_community.tools import DuckDuckGoSearchResults
+from duckduckgo_search import DDGS
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from typing import List
@@ -43,12 +43,7 @@ class RealtimeIntelligenceAgent:
             print(f"[WARN] Structured output init failed: {e}")
             self.structured_llm = None
         
-        # Initialize the free web search tool
-        try:
-            self.search = DuckDuckGoSearchResults()
-        except Exception as e:
-            print(f"[WARN] DuckDuckGo search init failed: {e}")
-            self.search = None
+        self.search = True
 
     def _extract_json_from_text(self, text: str) -> dict:
         """Try to extract JSON from raw LLM text response."""
@@ -68,40 +63,41 @@ class RealtimeIntelligenceAgent:
         if not sector or not sector.strip():
             sector = "General Business"
 
-        # Step 1: Fetch web search results (non-critical if it fails)
+        # Step 1: Fetch web search results
         company_results = ""
         sector_results = ""
         
-        if self.search:
-            company_query = f"{company_name} news litigation fraud defaults promoter"
-            sector_query = f"{sector} sector India RBI regulations headwinds challenges"
+        company_query = f"{company_name} news litigation fraud defaults promoter"
+        sector_query = f"{sector} sector India RBI regulations headwinds challenges"
 
-            try:
-                company_results = self.search.invoke(company_query)
-                if not isinstance(company_results, str):
-                    company_results = str(company_results)
-            except Exception as e:
-                print(f"[RESEARCH] Company web search failed: {e}")
-                company_results = "Web search unavailable."
+        try:
+            with DDGS() as ddgs:
+                c_res = list(ddgs.text(company_query, max_results=5))
+                company_results = json.dumps(c_res)
+        except Exception as e:
+            print(f"[RESEARCH] Company web search failed: {e}")
+            company_results = "Web search unavailable."
 
-            try:
-                sector_results = self.search.invoke(sector_query)
-                if not isinstance(sector_results, str):
-                    sector_results = str(sector_results)
-            except Exception as e:
-                print(f"[RESEARCH] Sector web search failed: {e}")
-                sector_results = "Web search unavailable."
-        else:
-            company_results = "Web search tool not available."
-            sector_results = "Web search tool not available."
+        try:
+            with DDGS() as ddgs:
+                s_res = list(ddgs.text(sector_query, max_results=5))
+                sector_results = json.dumps(s_res)
+        except Exception as e:
+            print(f"[RESEARCH] Sector web search failed: {e}")
+            sector_results = "Web search unavailable."
 
         # Step 2: Feed results to LLM for synthesis
         prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an elite credit research analyst. Synthesize the raw web search results into a clean, structured risk report. Filter out irrelevant marketing noise. 
+            ("system", """You are an elite credit risk and OSINT analyst. Your job is to extract ONLY critical, objective risk signals from raw web search results.
+            
+            CRITICAL RULES:
+            1. STRICTLY EXCLUDE all marketing fluff, company bios, promotional text, and self-descriptions (e.g., "India's largest...", "most loved app", "leading provider").
+            2. ONLY include objective news events, financial red flags, leadership changes, or operational updates.
+            3. If a search result is just a company's own website description, ignore it completely.
             
             You MUST output ONLY valid JSON that EXACTLY matches this schema:
             {{
-                "company_news": ["list of strings", "recent red flags"],
+                "company_news": ["list of strings", "objective news and red flags ONLY. No marketing."],
                 "sector_headwinds": ["list of strings", "regulatory challenges"],
                 "litigation_signals": ["list of strings", "lawsuits or defaults"]
             }}"""),
