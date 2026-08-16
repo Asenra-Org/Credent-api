@@ -74,3 +74,9 @@ uploads/
 # Internal AI Memory
 .ai/
 
+*.db-shm
+
+*.db-wal
+
+# Documentation
+docs/
