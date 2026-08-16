@@ -9,7 +9,8 @@ import shutil
 import uuid
 import pikepdf
 from datetime import datetime
-from fastapi import APIRouter, UploadFile, File, HTTPException, Form
+from typing import List
+from fastapi import APIRouter, UploadFile, File, HTTPException, Form, BackgroundTasks
 from app.agents.input.document_ingestion import DocumentIngestionAgent
 from app.agents.security.document_security import DocumentSecurityAgent
 
@@ -307,5 +308,139 @@ async def get_case_status(case_id: str):
     return {
         "case_id": case_id,
         "status": db_record.get("status"),
-        "current_step": db_record.get("current_step")
+        "current_step": db_record.get("current_step"),
+        "result": db_record.get("result_data") or None,
+        "error": db_record.get("error_message") or None,
+        "created_at": db_record.get("created_at"),
+        "updated_at": db_record.get("updated_at"),
+    }
+
+
+# =============================================================================
+# ASE-52: Batch Ingestion Endpoint — Async Queue + Supabase Storage
+# =============================================================================
+
+@router.post("/ingest/batch")
+async def ingest_batch_documents(
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(...),
+    institution_id: str = Form(default="DEFAULT"),
+):
+    """
+    Batch document upload endpoint (ASE-52).
+
+    Accepts 1–10 files (PDF, PNG, JPG, XLSX). For each file:
+      1. Validates size and MIME type.
+      2. Uploads to Supabase Storage (encrypted at-rest, UUID-prefixed path).
+      3. Creates a loan_case DB record in PENDING state.
+      4. Dispatches the appraisal job asynchronously via TaskDispatcher.
+         - Local dev (USE_CELERY=false): runs via FastAPI BackgroundTasks.
+         - Production (USE_CELERY=true): enqueues to Celery/Redis worker.
+
+    Returns immediately with a list of case_ids — no blocking on AI processing.
+    Poll GET /ingest/status/{case_id} to track progress.
+    """
+    from app.database.database import create_case
+    from app.services.storage_service import upload_document
+    from app.services.task_dispatcher import get_dispatcher
+
+    # --- Validation: file count ---
+    MAX_FILES = 10
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided.")
+    if len(files) > MAX_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Maximum {MAX_FILES} files allowed per batch. Got {len(files)}."
+        )
+
+    # --- Allowed MIME types ---
+    ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".xlsx", ".xls"}
+
+    dispatcher = get_dispatcher(background_tasks)
+    queued_cases = []
+    errors = []
+
+    for file in files:
+        try:
+            # 1. Validate filename
+            if not file.filename:
+                errors.append({"file": "unknown", "error": "Missing filename"})
+                continue
+
+            file_ext = os.path.splitext(file.filename)[1].lower()
+            if file_ext not in ALLOWED_EXTENSIONS:
+                errors.append({
+                    "file": file.filename,
+                    "error": f"Unsupported file type '{file_ext}'. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+                })
+                continue
+
+            # 2. Read and validate file size
+            content = await file.read()
+            if len(content) == 0:
+                errors.append({"file": file.filename, "error": "File is empty"})
+                continue
+            if len(content) > MAX_FILE_SIZE:
+                errors.append({
+                    "file": file.filename,
+                    "error": f"File exceeds {MAX_FILE_SIZE // (1024 * 1024)}MB limit"
+                })
+                continue
+
+            # 3. Upload to Supabase Storage (AES-256 encrypted at-rest)
+            # tenant_id defaults to institution_id — prepares for RLS in Week 8
+            safe_filename = os.path.basename(file.filename).replace("..", "").replace("/", "").replace("\\", "")
+            storage_path = upload_document(
+                file_bytes=content,
+                original_filename=safe_filename,
+                tenant_id=institution_id.lower().replace(" ", "_")
+            )
+
+            # 4. Create loan_case DB record in PENDING state
+            case_id = uuid.uuid4().hex
+            create_case(
+                case_id=case_id,
+                input_data={
+                    "original_filename": safe_filename,
+                    "storage_path": storage_path,
+                    "institution_id": institution_id,
+                    "file_size_bytes": len(content),
+                },
+                institution_id=institution_id
+            )
+
+            # 5. Dispatch async appraisal job (non-blocking)
+            dispatcher.dispatch(
+                case_id=case_id,
+                storage_path=storage_path,
+                institution_id=institution_id
+            )
+
+            queued_cases.append({
+                "case_id": case_id,
+                "filename": safe_filename,
+                "status": "QUEUED",
+                "poll_url": f"/api/v1/documents/ingest/status/{case_id}"
+            })
+
+        except Exception as e:
+            print(f"[ROUTE /ingest/batch] Error processing {file.filename}: {e}")
+            errors.append({"file": file.filename, "error": str(e)})
+
+    if not queued_cases and errors:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "All files failed validation or upload.", "errors": errors}
+        )
+
+    return {
+        "queued": len(queued_cases),
+        "failed": len(errors),
+        "cases": queued_cases,
+        "errors": errors if errors else None,
+        "message": (
+            f"{len(queued_cases)} file(s) queued for processing. "
+            "Poll each case's poll_url for real-time status."
+        )
     }

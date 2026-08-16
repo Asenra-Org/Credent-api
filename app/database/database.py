@@ -201,6 +201,29 @@ def mark_case_failed(case_id: str, error_message: str) -> None:
         conn.close()
 
 
+def update_case_status(case_id: str, status: str, current_step: str = None) -> None:
+    """
+    Atomic status + step update for a loan case.
+    Called by the appraisal_worker at every transition:
+      PENDING → RUNNING → COMPLETED | PAUSED | REJECTED | RETRYING
+    """
+    conn = get_sqlite_connection()
+    try:
+        if current_step:
+            conn.execute(
+                '''UPDATE loan_cases SET status = ?, current_step = ?, updated_at = ? WHERE case_id = ?''',
+                (status, current_step, datetime.now(timezone.utc).isoformat(), case_id)
+            )
+        else:
+            conn.execute(
+                '''UPDATE loan_cases SET status = ?, updated_at = ? WHERE case_id = ?''',
+                (status, datetime.now(timezone.utc).isoformat(), case_id)
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def get_case(case_id: str) -> dict | None:
     """Retrieve a loan case row by case_id. Returns None if not found."""
     conn = get_sqlite_connection()
