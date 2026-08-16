@@ -1,5 +1,5 @@
-# =============================================================================
-# CREDENT — Document Ingestion & PDF Forensics Route
+﻿# =============================================================================
+# CREDENT ΓÇö Document Ingestion & PDF Forensics Route
 # A product of Asenra | https://asenra.in
 # Copyright (c) 2026 Asenra. All rights reserved.
 # Unauthorized use, reproduction, or distribution is strictly prohibited.
@@ -15,7 +15,7 @@ from app.agents.input.document_ingestion import DocumentIngestionAgent
 router = APIRouter()
 
 # ---------------------------------------------------------------------------
-# Forensics Penalty — AI-A-W4
+# Forensics Penalty ΓÇö AI-A-W4
 # Deduct exactly this many points from base_score when document tampering
 # is detected by the pikepdf forensics layer.
 # Declared as a module-level constant so it can be imported and asserted
@@ -76,17 +76,17 @@ def apply_forensics_penalty(base_score: int, forensics_result: dict) -> dict:
 
     Design decisions
     ----------------
-    * **Pure function** — no side effects, no I/O, trivially unit-testable.
-    * **Single application** — the penalty is applied exactly once per call;
+    * **Pure function** ΓÇö no side effects, no I/O, trivially unit-testable.
+    * **Single application** ΓÇö the penalty is applied exactly once per call;
       callers must not call this function twice for the same document.
-    * **Score floor** — the adjusted score is clamped to 0 (never negative).
-    * **Defensive** — every failure mode returns the original score unchanged;
+    * **Score floor** ΓÇö the adjusted score is clamped to 0 (never negative).
+    * **Defensive** ΓÇö every failure mode returns the original score unchanged;
       the system never crashes on bad forensics data.
 
     Parameters
     ----------
     base_score : int
-        The AI-estimated credit score (0–100) produced by
+        The AI-estimated credit score (0ΓÇô100) produced by
         ``DocumentIngestionAgent.parse_financial_statement()``.
     forensics_result : dict
         The dict returned by ``run_pdf_forensics()``.  Expected shape::
@@ -97,17 +97,17 @@ def apply_forensics_penalty(base_score: int, forensics_result: dict) -> dict:
                 "metadata": {"creator": str, "producer": str}
             }
 
-        All keys are treated as optional — missing or malformed values are
+        All keys are treated as optional ΓÇö missing or malformed values are
         handled gracefully.
 
     Returns
     -------
     dict
         {
-            "original_score"  : int  — base_score before any penalty,
-            "adjusted_score"  : int  — base_score after penalty (>= 0),
-            "penalty_applied" : bool — True only when penalty was deducted,
-            "penalty_points"  : int  — points deducted (0 or FORENSICS_PENALTY),
+            "original_score"  : int  ΓÇö base_score before any penalty,
+            "adjusted_score"  : int  ΓÇö base_score after penalty (>= 0),
+            "penalty_applied" : bool ΓÇö True only when penalty was deducted,
+            "penalty_points"  : int  ΓÇö points deducted (0 or FORENSICS_PENALTY),
         }
     """
     # --- 1. Normalise base_score -------------------------------------------
@@ -127,7 +127,7 @@ def apply_forensics_penalty(base_score: int, forensics_result: dict) -> dict:
 
     # --- 2. Guard: forensics_result must be a non-empty dict ---------------
     if not forensics_result or not isinstance(forensics_result, dict):
-        # Missing or completely invalid forensics data — cannot determine
+        # Missing or completely invalid forensics data ΓÇö cannot determine
         # suspicion. Return score unchanged (safe-fail).
         return _no_penalty
 
@@ -135,7 +135,7 @@ def apply_forensics_penalty(base_score: int, forensics_result: dict) -> dict:
     raw_flag = forensics_result.get("is_suspicious")
 
     if raw_flag is None:
-        # Key is absent from the dict — treat as not suspicious.
+        # Key is absent from the dict ΓÇö treat as not suspicious.
         return _no_penalty
 
     try:
@@ -157,7 +157,7 @@ def apply_forensics_penalty(base_score: int, forensics_result: dict) -> dict:
         "penalty_points":  FORENSICS_PENALTY,
     }
 
-# Lazy init — catch import/init errors
+# Lazy init ΓÇö catch import/init errors
 try:
     agent = DocumentIngestionAgent()
 except Exception as init_err:
@@ -370,3 +370,19 @@ async def ingest_pdf_document(
     background_tasks.add_task(_dispatch_outbox_latency_optimization)
 
     return response_body
+
+
+from app.models.ase52 import Case
+
+@router.get("/ingest/status/{case_id}")
+async def get_case_status(case_id: str, session: Session = Depends(_get_api_db_session)):
+    """Fetch the real-time processing status of a credit appraisal case."""
+    db_record = session.query(Case).filter_by(id=case_id).first()
+    if not db_record:
+        raise HTTPException(status_code=404, detail="Case not found.")
+    
+    return {
+        "case_id": case_id,
+        "status": db_record.status,
+        "current_step": None
+    }

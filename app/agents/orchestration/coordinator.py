@@ -18,7 +18,8 @@ from app.agents.analysis.management_quality import ManagementQualityAgent
 from app.agents.analysis.sector_context import SectorContextAgent
 from app.agents.analysis.integrity_verification import IntegrityVerificationAgent
 from app.agents.orchestration.cam_generator import CAMGeneratorAgent
-from app.database.database import get_policy
+from app.database.database import get_policy, create_case, update_case_step, update_case_result, mark_case_failed, get_case
+from app.agents.orchestration.case_state import LoanCaseState, STATUS_RUNNING, STATUS_COMPLETED, STATUS_FAILED
 
 logger = logging.getLogger(__name__)
 
@@ -381,6 +382,258 @@ class AgentCoordinator:
             "evidence_trail": evidence_trail,
             "explanation": explanation
         }
+
+
+    async def run_appraisal_with_state(self, application_data: dict, case_id: str = None) -> dict:
+        """
+        [ASE-54] Stateful entry point for credit appraisal with persistent case tracking.
+
+        - Creates a new LoanCaseState and persists it to DB on each major step.
+        - Dynamically skips agents if their required data is absent.
+        - On crash/restart, pass the existing case_id to resume from the last saved step.
+        - Old run_appraisal() is untouched; this is an additive entry point.
+        """
+        import uuid
+
+        # --- Resolve or create a case_id ---
+        case_needs_creation = False
+        if case_id:
+            db_record = get_case(case_id)
+            if db_record and db_record["status"] == STATUS_COMPLETED:
+                logger.info("[ASE-54] Case %s already COMPLETED. Returning persisted result.", case_id)
+                return db_record["result_data"]
+            if db_record:
+                logger.info("[ASE-54] Resuming case %s from step '%s'.", case_id, db_record["current_step"])
+                state = LoanCaseState.from_db_record(db_record)
+            else:
+                logger.warning("[ASE-54] case_id %s not found in DB. Will create it.", case_id)
+                case_needs_creation = True
+        else:
+            case_id = f"CASE_{uuid.uuid4().hex[:12].upper()}"
+            case_needs_creation = True
+
+        if case_needs_creation:
+            institution_id = application_data.get("institution_id", "DEFAULT")
+            create_case(case_id, application_data, institution_id)
+            state = LoanCaseState(case_id=case_id, institution_id=institution_id)
+            logger.info("[ASE-54] Created new case %s.", case_id)
+
+        try:
+            # ---- STEP: Validate input ----
+            if not isinstance(application_data, dict):
+                raise ValueError("application_data must be a dictionary.")
+            file_path = application_data.get("file_path")
+            if not file_path or not os.path.exists(file_path):
+                raise ValueError(f"File not found or missing: {file_path}")
+
+            # ---- STEP: Load policy ----
+            update_case_step(state.case_id, "policy_loading")
+            institution_id = application_data.get("institution_id", "DEFAULT")
+            try:
+                policy = get_policy(institution_id) or DEFAULT_POLICY
+            except Exception:
+                policy = DEFAULT_POLICY
+            state.step_complete("policy_loaded")
+            update_case_step(state.case_id, "policy_loaded")
+
+            # ---- STEP: Ingestion (mandatory, fail-fast) ----
+            update_case_step(state.case_id, "ingestion_running")
+            ingestion_result = await self.ingestion_agent.ingest_pdf(file_path)
+            if not ingestion_result or ingestion_result.get("error"):
+                raise ValueError(f"Ingestion failed: {ingestion_result.get('error', 'unknown')}")
+
+            raw_text = ingestion_result.get("text", "")
+            if not raw_text or len(raw_text.strip()) < 10:
+                raise ValueError("Insufficient text extracted from PDF.")
+
+            extracted_financials = await self.ingestion_agent.parse_financial_statement(raw_text)
+            state.extracted_data = extracted_financials
+            state.step_complete("ingestion_complete")
+            update_case_step(state.case_id, "ingestion_complete")
+
+            # ---- DYNAMIC ROUTING: Detect available data ----
+            state.detect_available_data(extracted_financials)
+            company_name = extracted_financials.get("company_name", "Unknown Company")
+            sector_name = extracted_financials.get("sector", "Unknown Sector")
+            promoter_ids = application_data.get("promoter_ids", [])
+            gst_data = application_data.get("gst_data", [])
+            bank_data = application_data.get("bank_data", [])
+
+            if not state.has_financials:
+                logger.info("[ASE-54] Case %s: No P&L data detected — skipping FinancialHealthAgent.", case_id)
+            if not state.has_promoters:
+                logger.info("[ASE-54] Case %s: No promoter data detected — skipping ManagementAgent, routing to MANUAL REVIEW.", case_id)
+
+            # ---- STEP: Dispatch agents (dynamic) ----
+            update_case_step(state.case_id, "agents_dispatched")
+
+            async def get_sector_data(sec: str) -> dict:
+                outlook_data = await self.sector_agent.get_sector_outlook(sec)
+                rbi_data = await self.sector_agent.check_rbi_policies(sec)
+                res = dict(outlook_data) if isinstance(outlook_data, dict) else {}
+                res["rbi_policy_impact"] = rbi_data if isinstance(rbi_data, list) else []
+                return res
+
+            # Build task list — skip agents based on routing flags
+            financial_fallback = {
+                "status": "skipped", "company_name": company_name,
+                "financial_health_score": 50.0, "risk_level": "Medium",
+                "ratios": {}, "cash_flow_assessment": {"status": "Stable"},
+                "analysis_notes": ["Financial analysis skipped — no P&L data detected."],
+                "recommendation": "Manual review required."
+            }
+            management_fallback = {
+                "status": "error", "company_name": company_name,
+                "management_score": 0.0, "risk_level": "Undetermined",
+                "requires_manual_review": True, "fallback_reason": "missing_promoter",
+                "is_knockout": False, "promoter_analysis": [],
+                "governance_assessment": {"board_independence": "Undetermined", "regulatory_compliance": "Undetermined", "risk_level": "Undetermined"}
+            }
+            sector_fallback = {
+                "status": "success", "sector": sector_name, "outlook": "Stable",
+                "risk_factors": ["Sector analysis unavailable."], "rbi_policy_impact": []
+            }
+            integrity_fallback = {
+                "status": "success", "flags": [],
+                "warnings": ["Integrity cross-validation defaulted due to agent failure."]
+            }
+
+            tasks = []
+            task_map = []  # Track which result maps to which agent
+
+            if state.has_financials:
+                tasks.append(asyncio.create_task(self.financial_agent.analyze(extracted_financials)))
+                task_map.append("financial")
+            if state.has_promoters:
+                tasks.append(asyncio.create_task(self.management_agent.analyze({"company_name": company_name, "promoter_ids": promoter_ids})))
+                task_map.append("management")
+            tasks.append(asyncio.create_task(get_sector_data(sector_name)))
+            task_map.append("sector")
+            tasks.append(asyncio.create_task(self.integrity_agent.cross_validate(gst_data, bank_data)))
+            task_map.append("integrity")
+
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True),
+                    timeout=AGENT_TIMEOUT_SECONDS
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[ASE-54] Agent orchestration timed out. Using fallbacks.")
+                results = [asyncio.TimeoutError("timed out")] * len(tasks)
+
+            # Map results back
+            result_map = dict(zip(task_map, results))
+
+            fin_res = result_map.get("financial")
+            state.financial_result = fin_res if (fin_res and not isinstance(fin_res, Exception)) else financial_fallback
+
+            mgt_res = result_map.get("management")
+            state.management_result = mgt_res if (mgt_res and not isinstance(mgt_res, Exception)) else management_fallback
+
+            sec_res = result_map.get("sector")
+            state.sector_result = sec_res if (sec_res and not isinstance(sec_res, Exception)) else sector_fallback
+
+            int_res = result_map.get("integrity")
+            state.integrity_result = int_res if (int_res and not isinstance(int_res, Exception)) else integrity_fallback
+
+            # Persist intermediate snapshot
+            update_case_result(state.case_id, state.to_snapshot(), status=STATUS_RUNNING)
+
+            # ---- STEP: Evidence + CAM (reuse existing logic) ----
+            individual_outputs = {
+                "ingestion": extracted_financials,
+                "financial_health": state.financial_result,
+                "management_quality": state.management_result,
+                "sector_context": state.sector_result,
+                "integrity_check": state.integrity_result
+            }
+
+            try:
+                evidence_trail = await self.build_evidence_trail(individual_outputs, policy)
+            except Exception as exc:
+                logger.error("[ASE-54] Evidence trail failed: %s", exc)
+                evidence_trail = []
+            state.evidence_trail = evidence_trail
+            state.step_complete("evidence_built")
+            update_case_step(state.case_id, "evidence_built")
+
+            explanation = await self.generate_explanation(evidence_trail)
+
+            score = int(state.financial_result.get("financial_health_score", 50.0))
+            web_research = {
+                "company_news": [],
+                "sector_headwinds": state.sector_result.get("risk_factors", []),
+                "litigation_signals": []
+            }
+
+            management_score = state.management_result.get("management_score", 0.0)
+            is_knockout = state.management_result.get("is_knockout", False)
+            requires_manual_review = state.management_result.get("requires_manual_review", False)
+            fallback_reason = state.management_result.get("fallback_reason", "system_error")
+
+            forced_decision = None
+            forced_rationale = None
+            if requires_manual_review:
+                forced_decision = "MANUAL REVIEW"
+                forced_rationale = (
+                    "Management assessment could not be completed because promoter information was unavailable."
+                    if fallback_reason == "missing_promoter"
+                    else "Management assessment could not be completed and manual review is required."
+                )
+            elif is_knockout:
+                forced_decision = "REJECT"
+                forced_rationale = "Management Hard Gate: Knockout condition detected."
+            elif management_score < 50:
+                forced_decision = "REJECT"
+                forced_rationale = f"Management Hard Gate: Score ({management_score}) below threshold of 50."
+
+            try:
+                cam_result = await self.cam_agent.generate_cam(extracted_financials, state.integrity_result, web_research, score)
+                if forced_decision:
+                    cam_result["decision"] = forced_decision
+                    cam_result["decision_rationale"] = forced_rationale
+                    if forced_decision == "REJECT":
+                        cam_result["recommended_loan_amount"] = "0"
+                        cam_result["recommended_interest_rate"] = "N/A"
+                    elif forced_decision == "MANUAL REVIEW":
+                        cam_result["recommended_loan_amount"] = "Withheld"
+                        cam_result["recommended_interest_rate"] = "TBD"
+            except Exception as cam_exc:
+                logger.warning("[ASE-54] CAM generation failed: %s", cam_exc)
+                cam_result = {
+                    "five_cs": {k: "Manual review required due to system error." for k in ["character", "capacity", "capital", "collateral", "conditions"]},
+                    "decision": "MANUAL REVIEW",
+                    "recommended_loan_amount": "Withheld",
+                    "recommended_interest_rate": "TBD",
+                    "decision_rationale": "CAM generation failed. Manual review required."
+                }
+
+            state.step_complete("cam_complete")
+
+            final_result = {
+                "status": "success",
+                "case_id": state.case_id,
+                "appraisal_id": f"APPRAISAL_{int(datetime.now().timestamp())}",
+                "individual_agent_outputs": individual_outputs,
+                "combined_decision": cam_result,
+                "evidence_trail": evidence_trail,
+                "explanation": explanation,
+                "routing_flags": {
+                    "has_financials": state.has_financials,
+                    "has_promoters": state.has_promoters,
+                }
+            }
+            state.final_result = final_result
+            state.mark_complete()
+            update_case_result(state.case_id, final_result, status=STATUS_COMPLETED)
+            logger.info("[ASE-54] Case %s completed successfully.", state.case_id)
+            return final_result
+
+        except Exception as exc:
+            logger.error("[ASE-54] Case %s failed at step '%s': %s", state.case_id, state.current_step, exc, exc_info=True)
+            state.step_failed(str(exc))
+            mark_case_failed(state.case_id, str(exc))
+            raise
 
 
     async def build_evidence_trail(self, agent_outputs: dict, policy: dict = None) -> list[dict]:

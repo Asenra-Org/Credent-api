@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 class TransientQueueException(Exception): pass
 class EntityNotFoundError(Exception): pass
 class InvalidStateTransitionError(Exception): pass
+class SecurityViolationError(Exception): pass
 
 def execute_with_boundary(stage_name: str, next_stage: str = None):
     def decorator(business_logic_fn):
@@ -286,7 +287,46 @@ def credent_synthesis(self, data: dict):
 
     cam_payload["audit_warnings"] = data.get("audit_warnings", [])
 
+    from app.routes.documents import apply_forensics_penalty
+    
+    # Extract forensics from stage 1
+    session_factory = get_session_factory()
+    stage_1_key = None
+    with session_factory() as session:
+        from app.models.ase52 import Job
+        prev_job = session.query(Job).filter_by(case_id=data["case_id"], stage_name="stage_1_ingest").first()
+        if prev_job:
+            prev_exec = session.query(AgentExecution).filter_by(job_id=prev_job.id, status="SUCCESS").first()
+            if prev_exec:
+                stage_1_key = prev_exec.output_storage_key
+
+    stage_1_data = {}
+    if stage_1_key:
+        try:
+            stage_1_data = json.loads(storage.download_file(stage_1_key))
+        except Exception as e:
+            logger.warning(f"Failed to fetch stage 1 data for forensics: {e}")
+
+    forensics_results = stage_1_data.get("forensics_results", [])
+    aggregated_forensics = {"is_suspicious": False, "flags": []}
+    for fr in forensics_results:
+        if fr.get("is_suspicious"):
+            aggregated_forensics["is_suspicious"] = True
+        aggregated_forensics["flags"].extend(fr.get("flags", []))
+
+    # Existing ASE-52 base score is 50
+    base_score = 50
+    penalty_data = apply_forensics_penalty(base_score, aggregated_forensics)
+    adjusted_score = penalty_data.get("adjusted_score", base_score)
+    
+    # Append forensic flags to CAM
+    if aggregated_forensics.get("flags"):
+        if "audit_warnings" not in cam_payload:
+            cam_payload["audit_warnings"] = []
+        cam_payload["audit_warnings"].extend([{"reason": f} for f in aggregated_forensics["flags"]])
+
     cam_report_storage_key = storage.upload_file(
+
         tenant_id=data["tenant_id"],
         case_id=data["case_id"],
         document_id="aggregate",
@@ -301,8 +341,8 @@ def credent_synthesis(self, data: dict):
             id=f"appraisal_{uuid.uuid4().hex}",
             case_id=data["case_id"],
             tenant_id=data["tenant_id"],
-            base_score=50,
-            adjusted_score=50,
+            base_score=base_score,
+            adjusted_score=adjusted_score,
             decision="APPROVED",
             cam_report_storage_key=cam_report_storage_key
         )

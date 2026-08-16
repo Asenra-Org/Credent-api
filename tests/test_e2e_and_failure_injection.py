@@ -1,5 +1,5 @@
-# =============================================================================
-# CREDENT — Advanced E2E, Unit, Integration & Failure Injection Test Suite
+﻿# =============================================================================
+# CREDENT ΓÇö Advanced E2E, Unit, Integration & Failure Injection Test Suite
 # Feature: ASE-43 [BE-W5] Route Coordinator to UI, Dynamic Risk Policies & Policy Management API
 # A product of Asenra | https://asenra.in
 # Copyright (c) 2026 Asenra. All rights reserved.
@@ -262,6 +262,17 @@ def test_sqlite_concurrent_writes():
 
 def test_uuid_prefixed_upload_filenames_unique(client):
     """Verify that file uploads with identical filenames receive unique UUID-prefixed temporary paths/documents."""
+
+
+    from app.models.ase52 import Base, Tenant
+    from app.database.session import get_engine, get_session_factory
+    Base.metadata.create_all(get_engine())
+    with get_session_factory()() as session:
+        if not session.query(Tenant).filter_by(id='test_tenant').first():
+            session.add(Tenant(id='test_tenant', name='Test Tenant'))
+            session.commit()
+
+
     dummy_pdf = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF"
     
     headers1 = {"X-Tenant-ID": "test_tenant", "Idempotency-Key": "test_idem_" + str(__import__("uuid").uuid4())}
