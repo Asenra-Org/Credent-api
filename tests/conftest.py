@@ -16,19 +16,6 @@ from app.database.database import init_db, DB_PATH
 def setup_test_environment():
     """Ensure test database is properly initialized prior to test suite execution."""
     init_db()
-
-    # Initialize ASE-52 SQLAlchemy schema and default tenant
-    from app.database.session import get_engine, get_session_factory
-    from app.models.ase52 import Base, Tenant
-
-    Base.metadata.create_all(bind=get_engine())
-
-    with get_session_factory()() as session:
-        tenant = session.query(Tenant).filter_by(id="test_tenant").first()
-        if tenant is None:
-            session.add(Tenant(id="test_tenant", name="Test Tenant"))
-            session.commit()
-
     yield
 
 @pytest.fixture
@@ -58,16 +45,16 @@ def dummy_pdf_file():
     """Generates a temporary dummy PDF file for testing file upload routes."""
     temp_dir = tempfile.mkdtemp()
     file_path = os.path.join(temp_dir, "test_statement.pdf")
-
+    
     # Write a simple valid PDF header & minimal content
     with open(file_path, "wb") as f:
         f.write(b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
         f.write(b"2 0 obj\n<< /Type /Pages /Kinds [] /Count 0 >>\nendobj\n")
         f.write(b"xref\n0 3\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n")
         f.write(b"trailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n109\n%%EOF\n")
-
+        
     yield file_path
-
+    
     # Cleanup after test execution
     if os.path.exists(file_path):
         try:
