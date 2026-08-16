@@ -43,11 +43,11 @@ def test_policy_database_save_and_get():
         "auto_reject_cutoff": 40.0,
         "penalty_weights": {"integrity_mismatch": 25.0}
     }
-    
+
     # Save policy
     success = save_policy(policy_payload)
     assert success is True
-    
+
     # Retrieve policy
     retrieved = get_policy(inst_id)
     assert retrieved is not None
@@ -80,7 +80,7 @@ def test_put_admin_policies_route(client, sample_policy_payload):
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "success"
-    
+
     # Re-verify GET endpoint returns updated policy
     get_res = client.get("/api/v1/admin/policies")
     policy_data = get_res.json()
@@ -115,7 +115,7 @@ def test_patch_update_status_route(client):
 async def test_coordinator_dynamic_policy_evaluation():
     """Verify AgentCoordinator loads policy dynamically and applies approval cutoffs."""
     coordinator = AgentCoordinator()
-    
+
     # Mock ingestion and downstream agents matching exact attribute names and method signatures
     with patch.object(coordinator.ingestion_agent, "ingest_pdf") as mock_ingest, \
          patch.object(coordinator.ingestion_agent, "parse_financial_statement") as mock_parse, \
@@ -125,7 +125,7 @@ async def test_coordinator_dynamic_policy_evaluation():
          patch.object(coordinator.sector_agent, "check_rbi_policies") as mock_rbi, \
          patch.object(coordinator.integrity_agent, "cross_validate") as mock_integ, \
          patch.object(coordinator.cam_agent, "generate_cam") as mock_cam:
-         
+
         mock_ingest.return_value = {"status": "success", "text": "Financial Statement Text Content Length > 10"}
         mock_parse.return_value = {"company_name": "Test Enterprise", "sector": "Technology"}
         mock_fin.return_value = {"financial_health_score": 85.0, "metrics": {}, "ratios": {"current_ratio": 1.4}}
@@ -139,13 +139,13 @@ async def test_coordinator_dynamic_policy_evaluation():
             "recommended_interest_rate": "9.5%",
             "decision_rationale": "High health score."
         }
-        
+
         # Run appraisal with valid test file
         result = await coordinator.run_appraisal({
             "file_path": "tests/conftest.py",
             "institution_id": "DEFAULT"
         })
-        
+
         assert result["status"] == "success"
         assert "combined_decision" in result
         assert result["combined_decision"]["decision"] == "APPROVED"
@@ -182,7 +182,7 @@ async def test_supabase_outage_fallback_persistence():
 async def test_llm_timeout_triggers_local_heuristic_fallback():
     """Failure Injection: Simulate CAM LLM timeout; verify local score decision fallback."""
     coordinator = AgentCoordinator()
-    
+
     with patch.object(coordinator.ingestion_agent, "ingest_pdf") as mock_ingest, \
          patch.object(coordinator.ingestion_agent, "parse_financial_statement") as mock_parse, \
          patch.object(coordinator.financial_agent, "analyze") as mock_fin, \
@@ -191,7 +191,7 @@ async def test_llm_timeout_triggers_local_heuristic_fallback():
          patch.object(coordinator.sector_agent, "check_rbi_policies") as mock_rbi, \
          patch.object(coordinator.integrity_agent, "cross_validate") as mock_integ, \
          patch.object(coordinator.cam_agent, "generate_cam", side_effect=TimeoutError("LLM API Timeout")):
-         
+
         mock_ingest.return_value = {"status": "success", "text": "Valid Financial Statement Text String"}
         mock_parse.return_value = {"company_name": "Resilient Corp", "sector": "Energy"}
         mock_fin.return_value = {"financial_health_score": 85.0, "metrics": {}, "ratios": {}}
@@ -199,12 +199,12 @@ async def test_llm_timeout_triggers_local_heuristic_fallback():
         mock_sec.return_value = {"outlook": "Positive"}
         mock_rbi.return_value = []
         mock_integ.return_value = {"status": "success", "discrepancies": []}
-        
+
         result = await coordinator.run_appraisal({
             "file_path": "tests/conftest.py",
             "institution_id": "DEFAULT"
         })
-        
+
         assert result["status"] == "success"
         assert result["combined_decision"]["decision"] == "MANUAL REVIEW"
         assert "fallback" in result["combined_decision"]["decision_rationale"].lower()
@@ -264,7 +264,7 @@ def test_uuid_prefixed_upload_filenames_unique(client):
     """Verify that file uploads with identical filenames receive unique UUID-prefixed temporary paths/documents."""
 
     dummy_pdf = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF"
-    
+
     headers1 = {"X-Tenant-ID": "test_tenant", "Idempotency-Key": "test_idem_" + str(__import__("uuid").uuid4())}
     files1 = {"financials": ("statement.pdf", dummy_pdf, "application/pdf")}
     res1 = client.post("/api/v1/documents/ingest/pdf", files=files1, headers=headers1)
@@ -275,10 +275,10 @@ def test_uuid_prefixed_upload_filenames_unique(client):
 
     assert res1.status_code == 202
     assert res2.status_code == 202
-    
+
     data1 = res1.json()
     data2 = res2.json()
-    
+
     assert data1["case_id"] != data2["case_id"]
     assert data1["job_id"] != data2["job_id"]
 
@@ -409,3 +409,37 @@ def test_sqlite_secondary_index_idx_appraisal_created_at():
             pytest.fail(f"Unexpected query planner output on CI dataset: {rep_planner_text}")
     finally:
         conn.close()
+
+def test_regression_missing_greenlet_lazy_load(client):
+    """
+    ASE-52 REGRESSION: Prevent 'MissingGreenlet' crash by ensuring response serialization
+    does NOT attempt to lazy-load `case.jobs` in an async context.
+    We verify this by patching the `jobs` attribute on the Case model to raise an error
+    if accessed during the request, simulating strict async environment constraints.
+    """
+    from unittest.mock import PropertyMock
+    from app.models.ase52 import Case
+
+    dummy_pdf = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF"
+    headers = {"X-Tenant-ID": "test_tenant", "X-User-ID": "test_user"}
+    files = {"financials": ("statement.pdf", dummy_pdf, "application/pdf")}
+
+    # Store the original attribute so we don't break subsequent tests
+    original_jobs = Case.jobs
+
+    try:
+        # Patch jobs to prevent ANY access, simulating the missing greenlet boundary
+        with patch.object(Case, 'jobs', new_callable=PropertyMock) as mock_jobs:
+            mock_jobs.side_effect = RuntimeError("MissingGreenlet: simulated async strict boundary")
+
+            res = client.post("/api/v1/documents/ingest/pdf", files=files, headers=headers)
+
+            assert res.status_code == 202, f"Expected 202 Accepted, got {res.status_code}: {res.text}"
+            data = res.json()
+            assert "case_id" in data
+            assert "job_id" in data
+            assert "correlation_id" in data
+            assert data["job_id"].startswith("JOB_")
+    finally:
+        # Revert the attribute to its original state
+        Case.jobs = original_jobs

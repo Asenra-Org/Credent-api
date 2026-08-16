@@ -1,4 +1,4 @@
-﻿# =============================================================================
+# =============================================================================
 # CREDENT ΓÇö Document Ingestion & PDF Forensics Route
 # A product of Asenra | https://asenra.in
 # Copyright (c) 2026 Asenra. All rights reserved.
@@ -325,7 +325,7 @@ async def ingest_pdf_document(
 
     # 4. Atomic Case Creation + Outbox Event
     try:
-        case = create_case_with_outbox_event(
+        case, job_id = create_case_with_outbox_event(
             session=session,
             tenant_id=sec_ctx.tenant_id,
             borrower_name="Unknown",  # To be extracted by async pipeline
@@ -354,7 +354,7 @@ async def ingest_pdf_document(
         "status": "processing",
         "message": "Document ingested successfully. Appraisal pipeline initialized.",
         "case_id": case.id,
-        "job_id": case.jobs[0].id if case.jobs else None,
+        "job_id": job_id,
         "correlation_id": sec_ctx.correlation_id
     }
 

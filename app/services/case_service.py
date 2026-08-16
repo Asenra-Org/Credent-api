@@ -1,7 +1,7 @@
 import json
 import uuid
 import datetime
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from sqlalchemy.orm import Session
 from app.core.exceptions import TenantIsolationError
 from app.models.ase52 import Case, OutboxEvent, Job, AgentExecution, Document
@@ -18,7 +18,7 @@ def create_case_with_outbox_event(
     deduplication_key: str,
     documents_metadata: List[Dict[str, str]],
     case_id: Optional[str] = None
-) -> Case:
+) -> Tuple[Case, str]:
     """
     Creates a new Case and enqueues an outbox event in the EXACT SAME atomic database transaction.
     Guarantees that business state mutation and outbox event creation commit together or rollback together.
@@ -113,4 +113,4 @@ def create_case_with_outbox_event(
     # The commit() is handled by the caller (get_db_session() context manager).
     session.flush()
     
-    return case
+    return case, job_id
