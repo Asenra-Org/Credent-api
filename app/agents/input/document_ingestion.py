@@ -12,7 +12,8 @@ from pypdf import PdfReader
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Literal
+from pydantic import field_validator
 
 from app.agents.security.document_security import DocumentSecurityAgent
 
@@ -199,6 +200,25 @@ from typing import Optional, Dict
 class CitationDetail(BaseModel):
     page: Optional[int] = Field(None, description="The 1-based page number where the metric was found")
     snippet: Optional[str] = Field(None, description="The exact text snippet supporting the metric")
+    document: Optional[str] = Field(None, description="Document type inferred from text, e.g., 'GSTR-3B', 'Balance Sheet'")
+    location: Optional[str] = Field(None, description="The exact field/row label where the value was found")
+    confidence: Optional[Literal["VERIFIED", "INFERRED"]] = Field("VERIFIED", description="'VERIFIED' if explicitly found, 'INFERRED' if derived")
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def coerce_confidence(cls, v):
+        """[W8] Sanitize LLM confidence values to the allowed enum set."""
+        if v in ("VERIFIED", "INFERRED"):
+            return v
+        # Any unknown value (e.g. "HIGH", "YES", "N/A") defaults to VERIFIED
+        return "VERIFIED"
+
+class CalculatedMetricCitation(BaseModel):
+    """For ratios derived from extracted values — NOT found in the document."""
+    formula: str = Field(description="Formula used to calculate metric")
+    inputs: List[str] = Field(description="Source variables used in calculation")
+    confidence: str = Field("CALCULATED", description="Must always be CALCULATED")
+    note: str = Field("This metric was calculated by the system, not extracted from the document.")
 
 class CitationMetadata(BaseModel):
     revenue: Optional[CitationDetail] = Field(None, description="Citation for revenue/turnover")
@@ -207,6 +227,8 @@ class CitationMetadata(BaseModel):
     total_revenue: Optional[CitationDetail] = Field(None, description="Citation for total_revenue")
     total_debt: Optional[CitationDetail] = Field(None, description="Citation for total_debt")
     shareholder_equity: Optional[CitationDetail] = Field(None, description="Citation for shareholder_equity")
+    dscr: Optional[CalculatedMetricCitation] = Field(None, description="Citation for calculated DSCR")
+    current_ratio: Optional[CalculatedMetricCitation] = Field(None, description="Citation for calculated Current Ratio")
 
 class RiskExtraction(BaseModel):
     company_name: str = Field(description="The name of the company applying for credit")
@@ -246,7 +268,9 @@ DEFAULT_EXTRACTION = {
         "equity": None,
         "total_revenue": None,
         "total_debt": None,
-        "shareholder_equity": None
+        "shareholder_equity": None,
+        "dscr": None,
+        "current_ratio": None
     }
 }
 
@@ -613,6 +637,9 @@ class DocumentIngestionAgent:
               Each citation contains:
               * page: the 1-based page number where the metric was found (identified via the "--- PAGE X ---" headers in the text).
               * snippet: the exact supporting text snippet containing the value (e.g. "Revenue from operations: 50 Cr" or "Long-term borrowings: 20 Cr").
+              * document: infer the document type from text content (e.g., "GSTR-3B", "Balance Sheet", "CIBIL Report").
+              * location: the exact row or field label (e.g., "Total Taxable Value").
+              * confidence: set to "VERIFIED" if explicitly found, or "INFERRED" if derived.
               If a metric is missing/not found, set its citation field to null.
 
             Rules:
@@ -651,27 +678,45 @@ class DocumentIngestionAgent:
                 "citations": {{
                     "revenue": {{
                         "page": int,
-                        "snippet": "string"
+                        "snippet": "string",
+                        "document": "string",
+                        "location": "string",
+                        "confidence": "string"
                     }} or null,
                     "debt": {{
                         "page": int,
-                        "snippet": "string"
+                        "snippet": "string",
+                        "document": "string",
+                        "location": "string",
+                        "confidence": "string"
                     }} or null,
                     "equity": {{
                         "page": int,
-                        "snippet": "string"
+                        "snippet": "string",
+                        "document": "string",
+                        "location": "string",
+                        "confidence": "string"
                     }} or null,
                     "total_revenue": {{
                         "page": int,
-                        "snippet": "string"
+                        "snippet": "string",
+                        "document": "string",
+                        "location": "string",
+                        "confidence": "string"
                     }} or null,
                     "total_debt": {{
                         "page": int,
-                        "snippet": "string"
+                        "snippet": "string",
+                        "document": "string",
+                        "location": "string",
+                        "confidence": "string"
                     }} or null,
                     "shareholder_equity": {{
                         "page": int,
-                        "snippet": "string"
+                        "snippet": "string",
+                        "document": "string",
+                        "location": "string",
+                        "confidence": "string"
                     }} or null
                 }}
             }}"""),
@@ -689,7 +734,9 @@ class DocumentIngestionAgent:
                 "equity": None,
                 "total_revenue": None,
                 "total_debt": None,
-                "shareholder_equity": None
+                "shareholder_equity": None,
+                "dscr": None,
+                "current_ratio": None
             }
             if not citations_data:
                 return default_citations
@@ -727,6 +774,9 @@ class DocumentIngestionAgent:
                             continue
                 page = detail_dict.get("page")
                 snippet = detail_dict.get("snippet")
+                document = detail_dict.get("document")
+                location = detail_dict.get("location")
+                confidence = detail_dict.get("confidence", "VERIFIED")
                 try:
                     if page is not None:
                         page = int(page)
@@ -734,12 +784,32 @@ class DocumentIngestionAgent:
                     page = None
                 if snippet is not None:
                     snippet = str(snippet)
+                if document is not None:
+                    document = str(document)
+                if location is not None:
+                    location = str(location)
+                
                 citation_entry = {
                     "page": page,
-                    "snippet": snippet
+                    "snippet": snippet,
+                    "document": document,
+                    "location": location,
+                    "confidence": confidence
                 }
                 cleaned[k1] = citation_entry
                 cleaned[k2] = citation_entry
+            
+            # Carry over calculated metrics if they exist
+            for calc_metric in ["dscr", "current_ratio"]:
+                if calc_metric in citations_data and citations_data[calc_metric]:
+                    # Ensure it is a dict
+                    cd = citations_data[calc_metric]
+                    if hasattr(cd, "model_dump"):
+                        cd = cd.model_dump()
+                    elif not isinstance(cd, dict):
+                        cd = dict(cd)
+                    cleaned[calc_metric] = cd
+                    
             return cleaned
 
         # Attempt 1: Structured output

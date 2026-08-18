@@ -16,6 +16,8 @@ class Citation(BaseModel):
     id: int = Field(description="Unique integer ID for the citation, matching the bracketed inline marker (e.g. [1]).")
     snippet: Optional[str] = Field(default=None, description="Exact excerpt from the provided text.")
     page: Optional[int] = Field(default=None, description="Page number where the snippet was found, if available.")
+    document: Optional[str] = Field(default=None, description="Document type inferred from text")
+    location: Optional[str] = Field(default=None, description="Exact field label")
 
 class MetricWithCitation(BaseModel):
     text: str = Field(description="The analytical text containing inline citation markers like [1].")
@@ -61,10 +63,11 @@ class CAMGeneratorAgent:
             4. Else evaluate the remaining Five Cs criteria to determine APPROVE or MANUAL REVIEW in accordance with the credit policy.
             
             CRITICAL INSTRUCTION: You MUST output a JSON object containing ALL of the following keys.
+            Also, when citing metrics, you MUST reuse the exact citation details (document, page, location, snippet) provided in the 'Source Citations' data. Do NOT invent new page numbers or document names.
             
             {{
                 "five_cs": {{
-                    "character": {{"text": "analysis with [1]...", "citations": [{{"id": 1, "snippet": "...", "page": 1}}]}},
+                    "character": {{"text": "analysis with [1]...", "citations": [{{"id": 1, "snippet": "...", "page": 1, "document": "...", "location": "..."}}]}},
                     "capacity": {{"text": "analysis...", "citations": []}},
                     "capital": {{"text": "analysis...", "citations": []}},
                     "collateral": {{"text": "analysis...", "citations": []}},
@@ -81,6 +84,7 @@ class CAMGeneratorAgent:
             2. Integrity Flags: {integrity_data}
             3. Web Research: {research_data}
             4. Composite Risk Score: {score}
+            5. Source Citations: {citations}
             """)
         ])
 
@@ -91,13 +95,14 @@ class CAMGeneratorAgent:
             except: pass
         raise ValueError("No JSON found")
 
-    async def generate_cam(self, extracted_pdf_data: dict, integrity_flags: dict, web_research: dict, final_score: int) -> dict:
+    async def generate_cam(self, extracted_pdf_data: dict, integrity_flags: dict, web_research: dict, final_score: int, ingestion_citations: dict = None) -> dict:
         prompt = self._build_prompt()
         invoke_params = {
             "pdf_data": json.dumps(extracted_pdf_data),
             "integrity_data": json.dumps(integrity_flags),
             "research_data": json.dumps(web_research),
-            "score": final_score
+            "score": final_score,
+            "citations": json.dumps(ingestion_citations or {})
         }
 
         try:

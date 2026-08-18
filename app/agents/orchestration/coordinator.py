@@ -321,11 +321,13 @@ class AgentCoordinator:
             forced_rationale = f"Management Hard Gate: Score ({management_score}) is below the minimum threshold of 50."
 
         try:
+            ingestion_citations = extracted_financials.get("citations", {})
             cam_result = await self.cam_agent.generate_cam(
                 extracted_financials,
                 integrity_result,
                 web_research,
-                score
+                score,
+                ingestion_citations=ingestion_citations
             )
 
             # Apply Hard Gate Override
@@ -392,7 +394,14 @@ class AgentCoordinator:
             "individual_agent_outputs": individual_outputs,
             "combined_decision": cam_result,
             "evidence_trail": evidence_trail,
-            "explanation": explanation
+            "explanation": explanation,
+            "evidence_citations": {
+                "revenue": ingestion_citations.get("revenue"),
+                "debt": ingestion_citations.get("debt"),
+                "equity": ingestion_citations.get("equity"),
+                "dscr": self._build_dscr_citation(extracted_financials, financial_result),
+                "current_ratio": self._build_current_ratio_citation(extracted_financials, financial_result),
+            }
         }
 
 
@@ -656,7 +665,8 @@ class AgentCoordinator:
                 forced_rationale = f"Management Hard Gate: Score ({management_score}) below threshold of 50."
 
             try:
-                cam_result = await self.cam_agent.generate_cam(extracted_financials, state.integrity_result, web_research, score)
+                ingestion_citations = extracted_financials.get("citations", {})
+                cam_result = await self.cam_agent.generate_cam(extracted_financials, state.integrity_result, web_research, score, ingestion_citations=ingestion_citations)
                 if forced_decision:
                     cam_result["decision"] = forced_decision
                     cam_result["decision_rationale"] = forced_rationale
@@ -690,6 +700,13 @@ class AgentCoordinator:
                     "has_financials": state.has_financials,
                     "has_promoters": state.has_promoters,
                     "has_gst_bank_data": state.has_gst_bank_data,  # [W7]
+                },
+                "evidence_citations": {
+                    "revenue": ingestion_citations.get("revenue"),
+                    "debt": ingestion_citations.get("debt"),
+                    "equity": ingestion_citations.get("equity"),
+                    "dscr": self._build_dscr_citation(extracted_financials, state.financial_result),
+                    "current_ratio": self._build_current_ratio_citation(extracted_financials, state.financial_result),
                 }
             }
             state.final_result = final_result
@@ -1068,3 +1085,55 @@ class AgentCoordinator:
             "have been logged to the audit evidence trail. Please review the detailed evidence "
             "trail below to determine final loan eligibility."
         )
+
+    def _build_dscr_citation(self, extracted_financials: dict, financial_result: dict) -> dict:
+        """[W8] Build a calculated citation for DSCR."""
+        if not isinstance(financial_result, dict):
+            return None
+        ratios = financial_result.get("ratios", {})
+        if "dscr" not in ratios or ratios["dscr"] is None:
+            return None
+        
+        citations = extracted_financials.get("citations", {}) if isinstance(extracted_financials, dict) else {}
+        inputs = []
+        
+        revenue_cit = citations.get("revenue") if isinstance(citations, dict) else None
+        if revenue_cit and isinstance(revenue_cit, dict) and revenue_cit.get("page"):
+            inputs.append(f"revenue (page {revenue_cit['page']})")
+            
+        debt_cit = citations.get("debt") if isinstance(citations, dict) else None
+        if debt_cit and isinstance(debt_cit, dict) and debt_cit.get("page"):
+            inputs.append(f"debt (page {debt_cit['page']})")
+            
+        return {
+            "formula": "DSCR = Net Operating Income / Debt Service",
+            "inputs": inputs,
+            "confidence": "CALCULATED",
+            "note": "This metric was calculated by the system, not extracted from the document."
+        }
+
+    def _build_current_ratio_citation(self, extracted_financials: dict, financial_result: dict) -> dict:
+        """[W8] Build a calculated citation for Current Ratio."""
+        if not isinstance(financial_result, dict):
+            return None
+        ratios = financial_result.get("ratios", {})
+        if "current_ratio" not in ratios or ratios["current_ratio"] is None:
+            return None
+
+        citations = extracted_financials.get("citations", {}) if isinstance(extracted_financials, dict) else {}
+        inputs = []
+
+        # Current Ratio = Current Assets / Current Liabilities
+        # These come from the ingestion extraction, not from separate citation keys,
+        # so we trace back to the revenue citation as the best available document reference.
+        revenue_cit = citations.get("revenue") if isinstance(citations, dict) else None
+        if revenue_cit and isinstance(revenue_cit, dict) and revenue_cit.get("page"):
+            inputs.append(f"current_assets (document: {revenue_cit.get('document', 'source document')})")
+            inputs.append(f"current_liabilities (document: {revenue_cit.get('document', 'source document')})")
+
+        return {
+            "formula": "Current Ratio = Current Assets / Current Liabilities",
+            "inputs": inputs,
+            "confidence": "CALCULATED",
+            "note": "This metric was calculated by the system, not extracted from the document."
+        }
