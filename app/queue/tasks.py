@@ -288,7 +288,7 @@ def credent_synthesis(self, data: dict):
     cam_payload["audit_warnings"] = data.get("audit_warnings", [])
 
     from app.routes.documents import apply_forensics_penalty
-    
+
     # Extract forensics from stage 1
     session_factory = get_session_factory()
     stage_1_key = None
@@ -318,7 +318,7 @@ def credent_synthesis(self, data: dict):
     base_score = 50
     penalty_data = apply_forensics_penalty(base_score, aggregated_forensics)
     adjusted_score = penalty_data.get("adjusted_score", base_score)
-    
+
     # Append forensic flags to CAM
     if aggregated_forensics.get("flags"):
         if "audit_warnings" not in cam_payload:
@@ -355,3 +355,28 @@ def credent_synthesis(self, data: dict):
 def ping(payload: str = None):
     logger.info("Ping received")
     return True
+
+@celery_app.task(name="app.queue.tasks.process_batch_item", bind=True)
+def process_batch_item(self, case_id: str, storage_path: str, institution_id: str = "DEFAULT"):
+    """
+    Dedicated Celery task for the Batch Ingestion API.
+    Delegates to the monolithic AppraisalWorker execution.
+    """
+    from app.services.appraisal_worker import run_appraisal_job
+
+    logger.info(f"Executing batch item case_id={case_id}")
+
+    # AppraisalWorker requires an event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        result = loop.run_until_complete(
+            run_appraisal_job(
+                case_id=case_id,
+                storage_path_handle=storage_path,
+                institution_id=institution_id
+            )
+        )
+        return result
+    finally:
+        loop.close()
