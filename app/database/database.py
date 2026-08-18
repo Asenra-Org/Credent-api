@@ -176,16 +176,36 @@ def update_case_step(case_id: str, step: str, status: str = "RUNNING") -> None:
 
 
 def update_case_result(case_id: str, result_data: dict, status: str = "COMPLETED") -> None:
-    """Persist the final result and mark the case terminal."""
+    """
+    Persist result_data for a loan case.
+
+    Behaviour:
+      - STATUS_COMPLETED → sets current_step = 'done' (terminal state).
+      - Any other status  → persists result_data without touching current_step,
+        so the crash-recovery checkpoint written by update_case_step() is preserved.
+        Used by [W7] early ingestion snapshot and agents intermediate snapshot.
+    """
     conn = get_sqlite_connection()
     try:
-        conn.execute(
-            '''UPDATE loan_cases SET result_data = ?, status = ?, current_step = 'done', updated_at = ? WHERE case_id = ?''',
-            (json.dumps(result_data), status, datetime.now(timezone.utc).isoformat(), case_id)
-        )
+        if status == "COMPLETED":
+            conn.execute(
+                '''UPDATE loan_cases
+                   SET result_data = ?, status = ?, current_step = 'done', updated_at = ?
+                   WHERE case_id = ?''',
+                (json.dumps(result_data), status, datetime.now(timezone.utc).isoformat(), case_id)
+            )
+        else:
+            # Intermediate snapshot: do NOT overwrite current_step
+            conn.execute(
+                '''UPDATE loan_cases
+                   SET result_data = ?, status = ?, updated_at = ?
+                   WHERE case_id = ?''',
+                (json.dumps(result_data), status, datetime.now(timezone.utc).isoformat(), case_id)
+            )
         conn.commit()
     finally:
         conn.close()
+
 
 
 def mark_case_failed(case_id: str, error_message: str) -> None:

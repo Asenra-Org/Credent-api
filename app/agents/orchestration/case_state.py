@@ -50,8 +50,9 @@ class LoanCaseState:
     current_step: str = "init"
 
     # Dynamic routing flags — set during ingestion based on available data
-    has_financials: bool = True   # False → skip FinancialHealthAgent
-    has_promoters: bool = True    # False → skip ManagementAgent → auto MANUAL REVIEW
+    has_financials: bool = True      # False → skip FinancialHealthAgent
+    has_promoters: bool = True       # False → skip ManagementAgent → auto MANUAL REVIEW
+    has_gst_bank_data: bool = True   # [W7] False → skip IntegrityVerificationAgent
 
     # Accumulated outputs as the pipeline progresses
     extracted_data: dict = field(default_factory=dict)
@@ -121,12 +122,14 @@ class LoanCaseState:
             has_promoters=record.get("has_promoters", True),
         )
         # Restore any partial results that were already persisted
-        result_data = record.get("result_data", {})
+        result_data = record.get("result_data", {}) or {}
         state.extracted_data = result_data.get("extracted_data", {})
         state.financial_result = result_data.get("financial_result", {})
         state.management_result = result_data.get("management_result", {})
         state.sector_result = result_data.get("sector_result", {})
         state.integrity_result = result_data.get("integrity_result", {})
+        state.evidence_trail = result_data.get("evidence_trail", [])  # [W7] restore for evidence checkpoint
+        state.has_gst_bank_data = result_data.get("has_gst_bank_data", True)  # [W7] restore routing flag
         return state
 
     def to_snapshot(self) -> dict:
@@ -138,4 +141,5 @@ class LoanCaseState:
             "sector_result": self.sector_result,
             "integrity_result": self.integrity_result,
             "evidence_trail": self.evidence_trail,
+            "has_gst_bank_data": self.has_gst_bank_data,  # [W7] persist routing flag
         }

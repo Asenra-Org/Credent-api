@@ -19,7 +19,7 @@ from app.agents.analysis.sector_context import SectorContextAgent
 from app.agents.analysis.integrity_verification import IntegrityVerificationAgent
 from app.agents.orchestration.cam_generator import CAMGeneratorAgent
 from app.database.database import get_policy, create_case, update_case_step, update_case_result, mark_case_failed, get_case
-from app.agents.orchestration.case_state import LoanCaseState, STATUS_RUNNING, STATUS_COMPLETED, STATUS_FAILED
+from app.agents.orchestration.case_state import LoanCaseState, PIPELINE_STEPS, STATUS_RUNNING, STATUS_COMPLETED, STATUS_FAILED
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,18 @@ THRESHOLD_DE_HIGH = DEFAULT_POLICY["de_high"]
 REC_CURRENT_RATIO = "Assess the working capital cycle and evaluate short-term liabilities."
 REC_DSCR = "Request debt amortization schedules and project future free cash flows."
 REC_DE = "Review the company's capital structure and assess debt repayment capabilities."
+
+
+def _pipeline_step_index(step: str) -> int:
+    """
+    [W7] Return the ordinal index of `step` in PIPELINE_STEPS.
+    Used to determine resume position for crash recovery in run_appraisal_with_state().
+    Returns -1 for any unrecognised transient step name (e.g. 'ingestion_running').
+    """
+    try:
+        return PIPELINE_STEPS.index(step)
+    except ValueError:
+        return -1
 
 
 class AgentCoordinator:
@@ -419,37 +431,68 @@ class AgentCoordinator:
             logger.info("[ASE-54] Created new case %s.", case_id)
 
         try:
+            # ---- [W7] Crash recovery: compute resume position ----
+            _resume_idx = _pipeline_step_index(state.current_step)
+            _ingestion_done = (
+                _resume_idx >= _pipeline_step_index("ingestion_complete")
+                and bool(state.extracted_data)
+            )
+            _agents_done = (
+                _resume_idx >= _pipeline_step_index("agents_dispatched")
+                and bool(state.financial_result or state.sector_result or state.integrity_result)
+            )
+            _evidence_done = (
+                _resume_idx >= _pipeline_step_index("evidence_built")
+                and bool(state.evidence_trail)
+            )
+            if _ingestion_done:
+                logger.info(
+                    "[ASE-54] Case %s: Crash recovery — resuming from persisted step '%s'.",
+                    case_id, state.current_step
+                )
+
             # ---- STEP: Validate input ----
             if not isinstance(application_data, dict):
                 raise ValueError("application_data must be a dictionary.")
             file_path = application_data.get("file_path")
-            if not file_path or not os.path.exists(file_path):
-                raise ValueError(f"File not found or missing: {file_path}")
+            # [W7] On resume the temp file is already deleted — only enforce existence for fresh starts
+            if not _ingestion_done:
+                if not file_path or not os.path.exists(file_path):
+                    raise ValueError(f"File not found or missing: {file_path}")
 
-            # ---- STEP: Load policy ----
-            update_case_step(state.case_id, "policy_loading")
+            # ---- STEP: Load policy (always reload — cheap and stateless) ----
             institution_id = application_data.get("institution_id", "DEFAULT")
+            if _resume_idx < _pipeline_step_index("policy_loaded"):
+                update_case_step(state.case_id, "policy_loading")
             try:
                 policy = get_policy(institution_id) or DEFAULT_POLICY
             except Exception:
                 policy = DEFAULT_POLICY
-            state.step_complete("policy_loaded")
-            update_case_step(state.case_id, "policy_loaded")
+            if _resume_idx < _pipeline_step_index("policy_loaded"):
+                state.step_complete("policy_loaded")
+                update_case_step(state.case_id, "policy_loaded")
 
             # ---- STEP: Ingestion (mandatory, fail-fast) ----
-            update_case_step(state.case_id, "ingestion_running")
-            ingestion_result = await self.ingestion_agent.ingest_pdf(file_path)
-            if not ingestion_result or ingestion_result.get("error"):
-                raise ValueError(f"Ingestion failed: {ingestion_result.get('error', 'unknown')}")
+            if not _ingestion_done:
+                update_case_step(state.case_id, "ingestion_running")
+                ingestion_result = await self.ingestion_agent.ingest_pdf(file_path)
+                if not ingestion_result or ingestion_result.get("error"):
+                    raise ValueError(f"Ingestion failed: {ingestion_result.get('error', 'unknown')}")
 
-            raw_text = ingestion_result.get("text", "")
-            if not raw_text or len(raw_text.strip()) < 10:
-                raise ValueError("Insufficient text extracted from PDF.")
+                raw_text = ingestion_result.get("text", "")
+                if not raw_text or len(raw_text.strip()) < 10:
+                    raise ValueError("Insufficient text extracted from PDF.")
 
-            extracted_financials = await self.ingestion_agent.parse_financial_statement(raw_text)
-            state.extracted_data = extracted_financials
-            state.step_complete("ingestion_complete")
-            update_case_step(state.case_id, "ingestion_complete")
+                extracted_financials = await self.ingestion_agent.parse_financial_statement(raw_text)
+                state.extracted_data = extracted_financials
+                state.step_complete("ingestion_complete")
+                update_case_step(state.case_id, "ingestion_complete")
+                # [W7] Early snapshot: persist extracted_data immediately so crash after ingestion is recoverable
+                update_case_result(state.case_id, {"extracted_data": extracted_financials}, status=STATUS_RUNNING)
+            else:
+                # Resume: reuse persisted ingestion output — no re-parse of the (now-deleted) temp file
+                extracted_financials = state.extracted_data
+                logger.info("[ASE-54] Case %s: Resuming — using persisted ingestion data.", case_id)
 
             # ---- DYNAMIC ROUTING: Detect available data ----
             state.detect_available_data(extracted_financials)
@@ -459,85 +502,105 @@ class AgentCoordinator:
             gst_data = application_data.get("gst_data", [])
             bank_data = application_data.get("bank_data", [])
 
+            # [W7] GST/bank routing flag — skip IntegrityVerificationAgent when no transaction data provided
+            state.has_gst_bank_data = bool(gst_data or bank_data)
+
             if not state.has_financials:
                 logger.info("[ASE-54] Case %s: No P&L data detected — skipping FinancialHealthAgent.", case_id)
             if not state.has_promoters:
                 logger.info("[ASE-54] Case %s: No promoter data detected — skipping ManagementAgent, routing to MANUAL REVIEW.", case_id)
+            if not state.has_gst_bank_data:
+                logger.info("[ASE-54] Case %s: No GST/bank data — skipping IntegrityVerificationAgent.", case_id)
 
             # ---- STEP: Dispatch agents (dynamic) ----
-            update_case_step(state.case_id, "agents_dispatched")
+            if not _agents_done:
+                update_case_step(state.case_id, "agents_dispatched")
 
-            async def get_sector_data(sec: str) -> dict:
-                outlook_data = await self.sector_agent.get_sector_outlook(sec)
-                rbi_data = await self.sector_agent.check_rbi_policies(sec)
-                res = dict(outlook_data) if isinstance(outlook_data, dict) else {}
-                res["rbi_policy_impact"] = rbi_data if isinstance(rbi_data, list) else []
-                return res
+                async def get_sector_data(sec: str) -> dict:
+                    outlook_data = await self.sector_agent.get_sector_outlook(sec)
+                    rbi_data = await self.sector_agent.check_rbi_policies(sec)
+                    res = dict(outlook_data) if isinstance(outlook_data, dict) else {}
+                    res["rbi_policy_impact"] = rbi_data if isinstance(rbi_data, list) else []
+                    return res
 
-            # Build task list — skip agents based on routing flags
-            financial_fallback = {
-                "status": "skipped", "company_name": company_name,
-                "financial_health_score": 50.0, "risk_level": "Medium",
-                "ratios": {}, "cash_flow_assessment": {"status": "Stable"},
-                "analysis_notes": ["Financial analysis skipped — no P&L data detected."],
-                "recommendation": "Manual review required."
-            }
-            management_fallback = {
-                "status": "error", "company_name": company_name,
-                "management_score": 0.0, "risk_level": "Undetermined",
-                "requires_manual_review": True, "fallback_reason": "missing_promoter",
-                "is_knockout": False, "promoter_analysis": [],
-                "governance_assessment": {"board_independence": "Undetermined", "regulatory_compliance": "Undetermined", "risk_level": "Undetermined"}
-            }
-            sector_fallback = {
-                "status": "success", "sector": sector_name, "outlook": "Stable",
-                "risk_factors": ["Sector analysis unavailable."], "rbi_policy_impact": []
-            }
-            integrity_fallback = {
-                "status": "success", "flags": [],
-                "warnings": ["Integrity cross-validation defaulted due to agent failure."]
-            }
+                # Build task list — skip agents based on routing flags
+                financial_fallback = {
+                    "status": "skipped", "company_name": company_name,
+                    "financial_health_score": 50.0, "risk_level": "Medium",
+                    "ratios": {}, "cash_flow_assessment": {"status": "Stable"},
+                    "analysis_notes": ["Financial analysis skipped — no P&L data detected."],
+                    "recommendation": "Manual review required."
+                }
+                management_fallback = {
+                    "status": "error", "company_name": company_name,
+                    "management_score": 0.0, "risk_level": "Undetermined",
+                    "requires_manual_review": True, "fallback_reason": "missing_promoter",
+                    "is_knockout": False, "promoter_analysis": [],
+                    "governance_assessment": {"board_independence": "Undetermined", "regulatory_compliance": "Undetermined", "risk_level": "Undetermined"}
+                }
+                sector_fallback = {
+                    "status": "success", "sector": sector_name, "outlook": "Stable",
+                    "risk_factors": ["Sector analysis unavailable."], "rbi_policy_impact": []
+                }
+                # [W7] Separate skipped sentinel vs agent-failure fallback
+                integrity_skipped = {
+                    "status": "skipped", "flags": [],
+                    "warnings": ["Integrity cross-validation skipped — no GST or bank data provided."]
+                }
+                integrity_fallback = {
+                    "status": "success", "flags": [],
+                    "warnings": ["Integrity cross-validation defaulted due to agent failure."]
+                }
 
-            tasks = []
-            task_map = []  # Track which result maps to which agent
+                tasks = []
+                task_map = []  # Track which result maps to which agent
 
-            if state.has_financials:
-                tasks.append(asyncio.create_task(self.financial_agent.analyze(extracted_financials)))
-                task_map.append("financial")
-            if state.has_promoters:
-                tasks.append(asyncio.create_task(self.management_agent.analyze({"company_name": company_name, "promoter_ids": promoter_ids})))
-                task_map.append("management")
-            tasks.append(asyncio.create_task(get_sector_data(sector_name)))
-            task_map.append("sector")
-            tasks.append(asyncio.create_task(self.integrity_agent.cross_validate(gst_data, bank_data)))
-            task_map.append("integrity")
+                if state.has_financials:
+                    tasks.append(asyncio.create_task(self.financial_agent.analyze(extracted_financials)))
+                    task_map.append("financial")
+                if state.has_promoters:
+                    tasks.append(asyncio.create_task(self.management_agent.analyze({"company_name": company_name, "promoter_ids": promoter_ids})))
+                    task_map.append("management")
+                tasks.append(asyncio.create_task(get_sector_data(sector_name)))
+                task_map.append("sector")
+                # [W7] Only dispatch IntegrityVerificationAgent when GST or bank data is present
+                if state.has_gst_bank_data:
+                    tasks.append(asyncio.create_task(self.integrity_agent.cross_validate(gst_data, bank_data)))
+                    task_map.append("integrity")
 
-            try:
-                results = await asyncio.wait_for(
-                    asyncio.gather(*tasks, return_exceptions=True),
-                    timeout=AGENT_TIMEOUT_SECONDS
-                )
-            except asyncio.TimeoutError:
-                logger.warning("[ASE-54] Agent orchestration timed out. Using fallbacks.")
-                results = [asyncio.TimeoutError("timed out")] * len(tasks)
+                try:
+                    results = await asyncio.wait_for(
+                        asyncio.gather(*tasks, return_exceptions=True),
+                        timeout=AGENT_TIMEOUT_SECONDS
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("[ASE-54] Agent orchestration timed out. Using fallbacks.")
+                    results = [asyncio.TimeoutError("timed out")] * len(tasks)
 
-            # Map results back
-            result_map = dict(zip(task_map, results))
+                # Map results back
+                result_map = dict(zip(task_map, results))
 
-            fin_res = result_map.get("financial")
-            state.financial_result = fin_res if (fin_res and not isinstance(fin_res, Exception)) else financial_fallback
+                fin_res = result_map.get("financial")
+                state.financial_result = fin_res if (fin_res and not isinstance(fin_res, Exception)) else financial_fallback
 
-            mgt_res = result_map.get("management")
-            state.management_result = mgt_res if (mgt_res and not isinstance(mgt_res, Exception)) else management_fallback
+                mgt_res = result_map.get("management")
+                state.management_result = mgt_res if (mgt_res and not isinstance(mgt_res, Exception)) else management_fallback
 
-            sec_res = result_map.get("sector")
-            state.sector_result = sec_res if (sec_res and not isinstance(sec_res, Exception)) else sector_fallback
+                sec_res = result_map.get("sector")
+                state.sector_result = sec_res if (sec_res and not isinstance(sec_res, Exception)) else sector_fallback
 
-            int_res = result_map.get("integrity")
-            state.integrity_result = int_res if (int_res and not isinstance(int_res, Exception)) else integrity_fallback
+                # [W7] Use skipped sentinel if not dispatched; use fallback on dispatch failure
+                int_res = result_map.get("integrity")
+                if not state.has_gst_bank_data:
+                    state.integrity_result = integrity_skipped
+                else:
+                    state.integrity_result = int_res if (int_res and not isinstance(int_res, Exception)) else integrity_fallback
 
-            # Persist intermediate snapshot
-            update_case_result(state.case_id, state.to_snapshot(), status=STATUS_RUNNING)
+                # [W7] Persist intermediate snapshot — agents checkpoint for crash recovery
+                update_case_result(state.case_id, state.to_snapshot(), status=STATUS_RUNNING)
+            else:
+                # Resume: all agent results already persisted in DB — restore and skip re-dispatch
+                logger.info("[ASE-54] Case %s: Resuming — using persisted agent results.", case_id)
 
             # ---- STEP: Evidence + CAM (reuse existing logic) ----
             individual_outputs = {
@@ -548,14 +611,19 @@ class AgentCoordinator:
                 "integrity_check": state.integrity_result
             }
 
-            try:
-                evidence_trail = await self.build_evidence_trail(individual_outputs, policy)
-            except Exception as exc:
-                logger.error("[ASE-54] Evidence trail failed: %s", exc)
-                evidence_trail = []
-            state.evidence_trail = evidence_trail
-            state.step_complete("evidence_built")
-            update_case_step(state.case_id, "evidence_built")
+            if not _evidence_done:
+                try:
+                    evidence_trail = await self.build_evidence_trail(individual_outputs, policy)
+                except Exception as exc:
+                    logger.error("[ASE-54] Evidence trail failed: %s", exc)
+                    evidence_trail = []
+                state.evidence_trail = evidence_trail
+                state.step_complete("evidence_built")
+                update_case_step(state.case_id, "evidence_built")
+            else:
+                # Resume: use persisted evidence trail
+                evidence_trail = state.evidence_trail
+                logger.info("[ASE-54] Case %s: Resuming — using persisted evidence trail.", case_id)
 
             explanation = await self.generate_explanation(evidence_trail)
 
@@ -621,6 +689,7 @@ class AgentCoordinator:
                 "routing_flags": {
                     "has_financials": state.has_financials,
                     "has_promoters": state.has_promoters,
+                    "has_gst_bank_data": state.has_gst_bank_data,  # [W7]
                 }
             }
             state.final_result = final_result
