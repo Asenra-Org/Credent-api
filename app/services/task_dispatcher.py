@@ -124,7 +124,7 @@ class CeleryAdapter(TaskTransport):
     """
 
     QUEUE_NAME = "appraisal"
-    TASK_NAME = "app.queue.tasks.stage_1_ingest"
+    TASK_NAME = "app.queue.tasks.process_batch_item"
 
     def dispatch(self, case_id: str, storage_path: str, institution_id: str) -> None:
         """Publish the appraisal task to the Celery queue."""
