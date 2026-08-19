@@ -12,7 +12,7 @@ from pathlib import Path
 from collections import defaultdict
 from typing import Any, Callable, List, Optional
 
-from langchain_groq import ChatGroq
+from app.core.llm import ChatGroqWithFallback as ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 

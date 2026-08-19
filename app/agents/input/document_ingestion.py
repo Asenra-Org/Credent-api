@@ -10,7 +10,7 @@ import json
 import re
 import unicodedata
 from pypdf import PdfReader
-from langchain_groq import ChatGroq
+from app.core.llm import ChatGroqWithFallback as ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from typing import List, Optional, Any, Literal

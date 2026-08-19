@@ -10,7 +10,7 @@ import logging
 import asyncio
 from datetime import datetime
 
-from langchain_groq import ChatGroq
+from app.core.llm import ChatGroqWithFallback as ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from app.agents.input.document_ingestion import DocumentIngestionAgent
 from app.agents.analysis.financial_health import FinancialHealthAgent

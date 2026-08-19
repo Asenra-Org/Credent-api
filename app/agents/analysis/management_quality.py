@@ -10,7 +10,7 @@ import re
 import logging
 from typing import Any
 
-from langchain_groq import ChatGroq
+from app.core.llm import ChatGroqWithFallback as ChatGroq
 
 logger = logging.getLogger(__name__)
 
