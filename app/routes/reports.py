@@ -6,7 +6,7 @@
 # =============================================================================
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, ValidationError, Field
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import os
 
 router = APIRouter()
@@ -47,6 +47,8 @@ class CAMRequest(BaseModel):
 class StatusUpdate(BaseModel):
     decision: str  # APPROVE, REJECT, MANUAL REVIEW
     rationale: str
+    override_reason: Optional[str] = None
+    is_override: bool = False
 
 # Default CAM when everything fails
 def _default_cam(score: int) -> dict:
@@ -70,7 +72,13 @@ from app.database.database import save_appraisal, update_appraisal_status
 @router.patch("/update-status/{appraisal_id}")
 async def update_loan_status(appraisal_id: str, update: StatusUpdate):
     """Formally Approve or Reject a loan in Supabase (Primary) and SQLite (Fallback)."""
-    success = update_appraisal_status(appraisal_id, update.decision, update.rationale)
+    success = update_appraisal_status(
+        appraisal_id,
+        update.decision,
+        update.rationale,
+        override_reason=update.override_reason,
+        is_override=update.is_override
+    )
     if not success:
         raise HTTPException(status_code=500, detail="Failed to update application status across database backends.")
     

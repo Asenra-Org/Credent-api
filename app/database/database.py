@@ -47,7 +47,7 @@ def init_db():
     cursor = conn.cursor()
     cursor.execute('CREATE TABLE IF NOT EXISTS companies (id TEXT PRIMARY KEY, name TEXT, sector TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
     cursor.execute('CREATE TABLE IF NOT EXISTS appraisal_records (id TEXT PRIMARY KEY, company_id TEXT, revenue REAL, debt REAL, base_score INTEGER, adjusted_score INTEGER, decision TEXT, recommended_loan_amount TEXT, recommended_interest_rate TEXT, decision_rationale TEXT, raw_document_data TEXT, integrity_flags TEXT, web_research TEXT, cam_report TEXT, financial_ratios TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
-    
+
     # [Added] Initialize institution_policies table
     cursor.execute('''CREATE TABLE IF NOT EXISTS institution_policies (
         institution_id TEXT PRIMARY KEY,
@@ -61,43 +61,43 @@ def init_db():
         penalty_weights TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
-    
+
     # [Added] Seed default policy row if empty
     cursor.execute('SELECT 1 FROM institution_policies WHERE institution_id = ?', ('DEFAULT',))
     if not cursor.fetchone():
-        cursor.execute('''INSERT INTO institution_policies 
-            (institution_id, current_ratio_safe, current_ratio_min, dscr_safe, dscr_min, de_high, auto_approve_cutoff, auto_reject_cutoff, penalty_weights) 
+        cursor.execute('''INSERT INTO institution_policies
+            (institution_id, current_ratio_safe, current_ratio_min, dscr_safe, dscr_min, de_high, auto_approve_cutoff, auto_reject_cutoff, penalty_weights)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             ('DEFAULT', 1.2, 1.0, 1.25, 1.0, 2.0, 60.0, 40.0, json.dumps({
                 "integrity_mismatch": 15.0,
                 "promoter_flags": 10.0
             })))
-    
+
     # Safe backward-compatible migration for existing local databases
     cursor.execute('PRAGMA table_info(appraisal_records)')
     columns = [col[1] for col in cursor.fetchall()]
-    
+
     if 'financial_ratios' not in columns:
         try:
             cursor.execute('ALTER TABLE appraisal_records ADD COLUMN financial_ratios TEXT')
         except sqlite3.OperationalError as e:
             if "duplicate column name" not in str(e).lower():
                 raise e
-                
+
     if 'management_score' not in columns:
         try:
             cursor.execute('ALTER TABLE appraisal_records ADD COLUMN management_score REAL DEFAULT 0.0')
         except sqlite3.OperationalError as e:
             if "duplicate column name" not in str(e).lower():
                 raise e
-                
+
     if 'promoter_analysis' not in columns:
         try:
             cursor.execute('ALTER TABLE appraisal_records ADD COLUMN promoter_analysis TEXT DEFAULT "[]"')
         except sqlite3.OperationalError as e:
             if "duplicate column name" not in str(e).lower():
                 raise e
-                
+
     if 'governance_assessment' not in columns:
         try:
             cursor.execute('ALTER TABLE appraisal_records ADD COLUMN governance_assessment TEXT DEFAULT "{}"')
@@ -109,6 +109,21 @@ def init_db():
     if 'institution_id' not in columns:
         try:
             cursor.execute('ALTER TABLE appraisal_records ADD COLUMN institution_id TEXT DEFAULT "DEFAULT"')
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise e
+
+    # [Added for ASE-61] Alter table to include override audit fields
+    if 'override_reason' not in columns:
+        try:
+            cursor.execute('ALTER TABLE appraisal_records ADD COLUMN override_reason TEXT')
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise e
+
+    if 'is_override' not in columns:
+        try:
+            cursor.execute('ALTER TABLE appraisal_records ADD COLUMN is_override INTEGER DEFAULT 0')
         except sqlite3.OperationalError as e:
             if "duplicate column name" not in str(e).lower():
                 raise e
@@ -134,7 +149,7 @@ def init_db():
 
     conn.commit()
     conn.close()
-    
+
     sb = _get_supabase()
     if sb:
         print("[OK] Supabase integration active.")
@@ -274,7 +289,7 @@ def save_appraisal(data):
     """Saves appraisal results to Supabase (primary) and SQLite (fallback)."""
     record_id = f"REC_{int(datetime.now().timestamp())}_{uuid.uuid4().hex[:8]}"
     sb = _get_supabase()
-    
+
     # Helper to safely convert semi-structured AI data to numeric for DB
     def _safe_float(val):
         if not val: return 0.0
@@ -309,12 +324,14 @@ def save_appraisal(data):
         "integrity_flags": data.get("integrity_flags", {}),
         "raw_document_data": data.get("raw_document_data", {}),
         "financial_ratios": data.get("financial_ratios", {}),
-        
+
         # New fields for promoter governance
         "management_score": _safe_float(data.get("management_score", 0.0)),
         "promoter_analysis": data.get("promoter_analysis") or [],
         "governance_assessment": data.get("governance_assessment") or {},
-        "institution_id": data.get("institution_id", "DEFAULT")
+        "institution_id": data.get("institution_id", "DEFAULT"),
+        "override_reason": data.get("override_reason"),
+        "is_override": bool(data.get("is_override", False))
     }
 
     # 1. ATTEMPT SUPABASE SAVE
@@ -330,7 +347,7 @@ def save_appraisal(data):
         conn = get_sqlite_connection()
         cursor = conn.cursor()
         cursor.execute('INSERT OR REPLACE INTO companies (id, name, sector) VALUES (?, ?, ?)', (data.get("company_id"), data.get("company_name"), data.get("sector")))
-        cursor.execute('''INSERT INTO appraisal_records (id, company_id, revenue, debt, base_score, adjusted_score, decision, recommended_loan_amount, recommended_interest_rate, decision_rationale, raw_document_data, integrity_flags, web_research, cam_report, financial_ratios, management_score, promoter_analysis, governance_assessment, institution_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (record_id, data.get("company_id"), data.get("revenue"), data.get("debt"), data.get("base_score"), data.get("adjusted_score"), data.get("decision"), data.get("recommended_loan_amount"), data.get("recommended_interest_rate"), data.get("decision_rationale"), json.dumps(data.get("raw_document_data")), json.dumps(data.get("integrity_flags")), json.dumps(data.get("web_research")), json.dumps(data.get("cam_report")), json.dumps(payload["financial_ratios"]), payload["management_score"], json.dumps(payload["promoter_analysis"]), json.dumps(payload["governance_assessment"]), payload["institution_id"]))
+        cursor.execute('''INSERT INTO appraisal_records (id, company_id, revenue, debt, base_score, adjusted_score, decision, recommended_loan_amount, recommended_interest_rate, decision_rationale, raw_document_data, integrity_flags, web_research, cam_report, financial_ratios, management_score, promoter_analysis, governance_assessment, institution_id, override_reason, is_override) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (record_id, data.get("company_id"), data.get("revenue"), data.get("debt"), data.get("base_score"), data.get("adjusted_score"), data.get("decision"), data.get("recommended_loan_amount"), data.get("recommended_interest_rate"), data.get("decision_rationale"), json.dumps(data.get("raw_document_data")), json.dumps(data.get("integrity_flags")), json.dumps(data.get("web_research")), json.dumps(data.get("cam_report")), json.dumps(payload["financial_ratios"]), payload["management_score"], json.dumps(payload["promoter_analysis"]), json.dumps(payload["governance_assessment"]), payload["institution_id"], data.get("override_reason"), 1 if data.get("is_override") else 0))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -341,7 +358,7 @@ def save_appraisal(data):
 def get_recent_appraisals(limit=10):
     """Fetches records from Supabase if available, else SQLite."""
     sb = _get_supabase()
-    
+
     if sb:
         try:
             response = sb.table("loan_applications").select("*").order("created_at", desc=True).limit(limit).execute()
@@ -363,7 +380,9 @@ def get_recent_appraisals(limit=10):
                     "financial_ratios": item.get("financial_ratios", {}),
                     "management_score": item.get("management_score", 0.0),
                     "promoter_analysis": item.get("promoter_analysis", []),
-                    "governance_assessment": item.get("governance_assessment", {})
+                    "governance_assessment": item.get("governance_assessment", {}),
+                    "override_reason": item.get("override_reason"),
+                    "is_override": bool(item.get("is_override", False))
                 })
             return records
         except Exception as e:
@@ -379,16 +398,25 @@ def get_recent_appraisals(limit=10):
         record = dict(zip(columns, row))
         for field in ["raw_document_data", "integrity_flags", "web_research", "cam_report", "financial_ratios", "promoter_analysis", "governance_assessment"]:
             if record.get(field): record[field] = json.loads(record[field])
-        
+
         if "sector" not in record:
             raw_data = record.get("raw_document_data") or {}
             record["sector"] = raw_data.get("sector", "N/A")
-            
+
+        if "is_override" in record and record["is_override"] is not None:
+            record["is_override"] = bool(record["is_override"])
+
         results.append(record)
     conn.close()
     return results
 
-def update_appraisal_status(appraisal_id: str, decision: str, rationale: str) -> bool:
+def update_appraisal_status(
+    appraisal_id: str,
+    decision: str,
+    rationale: str,
+    override_reason: str = None,
+    is_override: bool = False
+) -> bool:
     """Updates status overrides in both Supabase (primary) and SQLite (fallback)."""
     sb = _get_supabase()
     status_map = {
@@ -398,37 +426,40 @@ def update_appraisal_status(appraisal_id: str, decision: str, rationale: str) ->
         "MANUAL": "UNDER_REVIEW"
     }
     final_status = status_map.get(decision, "UNDER_REVIEW")
-    
+
     supabase_success = False
     if sb:
         try:
+            update_payload = {
+                "decision": decision,
+                "status": final_status,
+                "decision_rationale": rationale,
+                "override_reason": override_reason,
+                "is_override": is_override
+            }
             sb.table("loan_applications") \
-                .update({
-                    "decision": decision,
-                    "status": final_status,
-                    "decision_rationale": rationale
-                }) \
+                .update(update_payload) \
                 .eq("id", appraisal_id) \
                 .execute()
             print(f"[OK] Updated status in Supabase for {appraisal_id}")
             supabase_success = True
         except Exception as e:
             print(f"[ERROR] Supabase status update error: {e}")
-            
+
     sqlite_success = False
     try:
         conn = get_sqlite_connection()
         cursor = conn.cursor()
-        cursor.execute('''UPDATE appraisal_records 
-            SET decision = ?, decision_rationale = ? 
-            WHERE id = ?''', (decision, rationale, appraisal_id))
+        cursor.execute('''UPDATE appraisal_records
+            SET decision = ?, decision_rationale = ?, override_reason = ?, is_override = ?
+            WHERE id = ?''', (decision, rationale, override_reason, 1 if is_override else 0, appraisal_id))
         conn.commit()
         conn.close()
         print(f"[OK] Updated status in SQLite for {appraisal_id}")
         sqlite_success = True
     except Exception as e:
         print(f"[ERROR] SQLite status update error: {e}")
-        
+
     return supabase_success or sqlite_success
 
 def get_policy(institution_id: str) -> dict:
@@ -436,9 +467,9 @@ def get_policy(institution_id: str) -> dict:
     try:
         conn = get_sqlite_connection()
         cursor = conn.cursor()
-        cursor.execute('''SELECT institution_id, current_ratio_safe, current_ratio_min, 
-                                 dscr_safe, dscr_min, de_high, auto_approve_cutoff, 
-                                 auto_reject_cutoff, penalty_weights 
+        cursor.execute('''SELECT institution_id, current_ratio_safe, current_ratio_min,
+                                 dscr_safe, dscr_min, de_high, auto_approve_cutoff,
+                                 auto_reject_cutoff, penalty_weights
                           FROM institution_policies WHERE institution_id = ?''', (institution_id,))
         row = cursor.fetchone()
         conn.close()
@@ -463,8 +494,8 @@ def save_policy(policy_data: dict) -> bool:
     try:
         conn = get_sqlite_connection()
         cursor = conn.cursor()
-        cursor.execute('''INSERT OR REPLACE INTO institution_policies 
-            (institution_id, current_ratio_safe, current_ratio_min, dscr_safe, dscr_min, de_high, auto_approve_cutoff, auto_reject_cutoff, penalty_weights) 
+        cursor.execute('''INSERT OR REPLACE INTO institution_policies
+            (institution_id, current_ratio_safe, current_ratio_min, dscr_safe, dscr_min, de_high, auto_approve_cutoff, auto_reject_cutoff, penalty_weights)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''', (
                 policy_data.get("institution_id"),
                 policy_data.get("current_ratio_safe"),
