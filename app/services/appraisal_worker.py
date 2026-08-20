@@ -44,7 +44,7 @@ async def run_appraisal_job(
     Execute the full credit appraisal pipeline for a single document.
 
     This is the canonical worker function — callable from any execution context.
-    
+
     Args:
         case_id: UUID of the loan case record in the database.
         storage_path_handle: Opaque storage handle returned by StorageService.upload_document().
@@ -77,13 +77,13 @@ async def run_appraisal_job(
         # 2. Write to a temp file for the pipeline (agents expect file paths)
         file_ext = _extract_extension(storage_path_handle)
         with tempfile.NamedTemporaryFile(
-            suffix=file_ext, 
-            delete=False, 
+            suffix=file_ext,
+            delete=False,
             prefix=f"credent_{case_id}_"
         ) as tmp:
             tmp.write(file_bytes)
             temp_file_path = tmp.name
-        
+
         logger.info(f"[Worker] Temp file written: {temp_file_path}")
 
         try:
@@ -136,7 +136,7 @@ async def run_appraisal_job(
             delay = RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
             logger.info(f"[Worker] Retrying case_id={case_id} in {delay:.1f}s (attempt {attempt + 1}/{MAX_RETRIES})")
             update_case_status(case_id, "RETRYING", current_step=f"retry_{attempt}")
-            
+
             await asyncio.sleep(delay)
             return await run_appraisal_job(
                 case_id=case_id,
@@ -162,10 +162,45 @@ async def run_appraisal_job(
             }
 
 
+async def resume_appraisal_job(case_id: str) -> dict:
+    """[ASE-63] Resumes a PAUSED case directly, bypassing file download."""
+    from app.database.database import update_case_status
+    from app.agents.input.document_ingestion import DocumentIngestionAgent
+    from app.agents.orchestration.coordinator import AgentCoordinator
+
+    logger.info(f"[Worker] Resuming appraisal job | case_id={case_id}")
+    update_case_status(case_id, "RUNNING", current_step="coordinator_resumed")
+
+    try:
+        ingestion_agent = DocumentIngestionAgent()
+        coordinator = AgentCoordinator(ingestion_agent=ingestion_agent)
+
+        # Pass empty application_data (file_path=None) since coordinator restores from DB
+        appraisal_result = await coordinator.run_appraisal_with_state(
+            {"file_path": None, "institution_id": "DEFAULT"},
+            case_id=case_id
+        )
+
+        if isinstance(appraisal_result, dict):
+            if appraisal_result.get("status") == "paused":
+                logger.info(f"[Worker] Appraisal paused again for case_id={case_id}")
+                return appraisal_result
+            _persist_appraisal(appraisal_result, case_id, "DEFAULT")
+
+        update_case_status(case_id, "COMPLETED", current_step="done")
+        logger.info(f"[Worker] ✓ Resumed appraisal completed for case_id={case_id}")
+        return appraisal_result
+    except Exception as exc:
+        logger.error(f"[Worker] Resume failed for case_id={case_id}: {exc}", exc_info=True)
+        update_case_status(case_id, "FAILED", current_step="failed")
+        return {"status": "FAILED", "reason": str(exc)}
+
+
+
 def _persist_appraisal(appraisal_result: dict, case_id: str, institution_id: str) -> None:
     """Extract relevant fields from the coordinator output and persist to database."""
     from app.database.database import save_appraisal
-    
+
     try:
         individual = appraisal_result.get("individual_agent_outputs", {})
         ingestion_data = individual.get("ingestion", {})

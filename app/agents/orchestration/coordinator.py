@@ -650,19 +650,53 @@ class AgentCoordinator:
 
             forced_decision = None
             forced_rationale = None
-            if requires_manual_review:
-                forced_decision = "MANUAL REVIEW"
-                forced_rationale = (
-                    "Management assessment could not be completed because promoter information was unavailable."
-                    if fallback_reason == "missing_promoter"
-                    else "Management assessment could not be completed and manual review is required."
-                )
-            elif is_knockout:
-                forced_decision = "REJECT"
-                forced_rationale = "Management Hard Gate: Knockout condition detected."
-            elif management_score < 50:
-                forced_decision = "REJECT"
-                forced_rationale = f"Management Hard Gate: Score ({management_score}) below threshold of 50."
+
+            # [ASE-63] Respect manager overrides from a resumed HITL pause
+            if state.manager_decision:
+                forced_decision = state.manager_decision
+                forced_rationale = state.manager_rationale or "Manager override applied."
+                logger.info("[ASE-63] Resuming with manager override: %s", forced_decision)
+            else:
+                if requires_manual_review:
+                    forced_decision = "MANUAL REVIEW"
+                    forced_rationale = (
+                        "Management assessment could not be completed because promoter information was unavailable."
+                        if fallback_reason == "missing_promoter"
+                        else "Management assessment could not be completed and manual review is required."
+                    )
+                elif is_knockout:
+                    forced_decision = "REJECT"
+                    forced_rationale = "Management Hard Gate: Knockout condition detected."
+                elif management_score < 50:
+                    forced_decision = "REJECT"
+                    forced_rationale = f"Management Hard Gate: Score ({management_score}) below threshold of 50."
+
+                # [ASE-63] True HITL Pause if critical risk is detected
+                # Only pause for:
+                # 1. requires_manual_review
+                # 2. CRITICAL evidence severity
+                has_critical_evidence = any(item.get("severity") == "CRITICAL" for item in evidence_trail)
+
+                if requires_manual_review or has_critical_evidence:
+                    pause_reason = "HUMAN_APPROVAL_REQUIRED"
+                    if has_critical_evidence and not requires_manual_review:
+                        pause_reason = "CRITICAL_RISK_DETECTED"
+
+                    logger.warning(f"[ASE-63] Critical risk detected ({pause_reason}). Pausing pipeline for HITL review.")
+
+                    # Store pause reason in the state so it persists in the snapshot
+                    state.pause_reason = pause_reason
+                    # Persist the snapshot along with the updated status
+                    update_case_result(state.case_id, state.to_snapshot(), status="PAUSED")
+                    logger.info("[ASE-63] Case %s PAUSED for manual review: %s", state.case_id, state.pause_reason)
+
+                    # Return immediately to halt execution.
+                    return {
+                        "status": "paused",
+                        "case_id": state.case_id,
+                        "pause_reason": pause_reason,
+                        "message": f"Pipeline paused for HITL review. {pause_reason}"
+                    }
 
             try:
                 ingestion_citations = extracted_financials.get("citations", {})
@@ -1093,18 +1127,18 @@ class AgentCoordinator:
         ratios = financial_result.get("ratios", {})
         if "dscr" not in ratios or ratios["dscr"] is None:
             return None
-        
+
         citations = extracted_financials.get("citations", {}) if isinstance(extracted_financials, dict) else {}
         inputs = []
-        
+
         revenue_cit = citations.get("revenue") if isinstance(citations, dict) else None
         if revenue_cit and isinstance(revenue_cit, dict) and revenue_cit.get("page"):
             inputs.append(f"revenue (page {revenue_cit['page']})")
-            
+
         debt_cit = citations.get("debt") if isinstance(citations, dict) else None
         if debt_cit and isinstance(debt_cit, dict) and debt_cit.get("page"):
             inputs.append(f"debt (page {debt_cit['page']})")
-            
+
         return {
             "formula": "DSCR = Net Operating Income / Debt Service",
             "inputs": inputs,
