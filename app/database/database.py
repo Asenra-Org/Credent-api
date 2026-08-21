@@ -132,6 +132,102 @@ def init_db():
     )''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_loan_cases_status ON loan_cases(status)')
 
+    # =========================================================================
+    # [ASE-60] Identity, RBAC & Audit System Foundation
+    # =========================================================================
+    cursor.execute('''CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        is_active INTEGER DEFAULT 1,
+        is_locked INTEGER DEFAULT 0,
+        failed_login_count INTEGER DEFAULT 0,
+        lockout_until TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        auth_provider TEXT DEFAULT 'local',
+        mfa_secret TEXT,
+        mfa_enabled INTEGER DEFAULT 0
+    )''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email COLLATE NOCASE)')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS tenant_memberships (
+        user_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        is_active INTEGER DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, tenant_id),
+        FOREIGN KEY (user_id) REFERENCES users(id)
+    )''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_tenant_memberships_tenant ON tenant_memberships(tenant_id)')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS sessions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        refresh_token_hash TEXT NOT NULL,
+        issued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        expires_at TIMESTAMP NOT NULL,
+        revoked_at TIMESTAMP,
+        is_revoked INTEGER DEFAULT 0,
+        ip_address TEXT,
+        user_agent TEXT,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+    )''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_sessions_refresh_hash ON sessions(refresh_token_hash)')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS audit_logs (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        case_id TEXT,
+        action TEXT NOT NULL,
+        resource_type TEXT,
+        resource_id TEXT,
+        previous_state TEXT,
+        new_state TEXT,
+        decision TEXT,
+        reason TEXT,
+        sequence_number INTEGER NOT NULL,
+        previous_hash TEXT NOT NULL,
+        current_hash TEXT NOT NULL,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_logs_tenant_seq ON audit_logs(tenant_id, sequence_number)')
+
+    cursor.execute('''CREATE TRIGGER IF NOT EXISTS prevent_audit_logs_update
+        BEFORE UPDATE ON audit_logs
+        BEGIN
+            SELECT RAISE(ABORT, 'audit_logs are append-only');
+        END;
+    ''')
+
+    cursor.execute('''CREATE TRIGGER IF NOT EXISTS prevent_audit_logs_delete
+        BEFORE DELETE ON audit_logs
+        BEGIN
+            SELECT RAISE(ABORT, 'audit_logs are append-only');
+        END;
+    ''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS audit_chain_heads (
+        tenant_id TEXT PRIMARY KEY,
+        latest_sequence INTEGER NOT NULL DEFAULT 0,
+        latest_hash TEXT NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS system_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        is_bootstrapped INTEGER NOT NULL DEFAULT 0
+    )''')
+
+    # Initialize system_state if empty
+    cursor.execute('SELECT 1 FROM system_state WHERE id = 1')
+    if not cursor.fetchone():
+        cursor.execute('INSERT INTO system_state (id, is_bootstrapped) VALUES (1, 0)')
+
     conn.commit()
     conn.close()
     
@@ -244,16 +340,19 @@ def update_case_status(case_id: str, status: str, current_step: str = None) -> N
         conn.close()
 
 
-def get_case(case_id: str) -> dict | None:
-    """Retrieve a loan case row by case_id. Returns None if not found."""
+def get_case(case_id: str, tenant_id: str = None) -> dict | None:
+    """Retrieve a loan case row by case_id. Returns None if not found or if tenant_id doesn't match."""
     conn = get_sqlite_connection()
     try:
-        cursor = conn.execute(
-            '''SELECT case_id, status, current_step, has_financials, has_promoters,
-               institution_id, input_data, result_data, error_message, created_at, updated_at
-               FROM loan_cases WHERE case_id = ?''',
-            (case_id,)
-        )
+        query = '''SELECT case_id, status, current_step, has_financials, has_promoters,
+                   institution_id, input_data, result_data, error_message, created_at, updated_at
+                   FROM loan_cases WHERE case_id = ?'''
+        params = [case_id]
+        if tenant_id:
+            query += " AND institution_id = ?"
+            params.append(tenant_id)
+            
+        cursor = conn.execute(query, params)
         row = cursor.fetchone()
         if not row:
             return None
@@ -338,13 +437,17 @@ def save_appraisal(data):
 
     return record_id
 
-def get_recent_appraisals(limit=10):
-    """Fetches records from Supabase if available, else SQLite."""
+def get_recent_appraisals(limit=10, tenant_id: str = None):
+    """Fetches records from Supabase if available, else SQLite. 
+    Enforces tenant isolation by filtering institution_id if tenant_id is provided."""
     sb = _get_supabase()
     
     if sb:
         try:
-            response = sb.table("loan_applications").select("*").order("created_at", desc=True).limit(limit).execute()
+            query = sb.table("loan_applications").select("*").order("created_at", desc=True).limit(limit)
+            if tenant_id:
+                query = query.eq("institution_id", tenant_id)
+            response = query.execute()
             # Map Supabase fields to internal dict format
             records = []
             for item in response.data:
@@ -372,7 +475,10 @@ def get_recent_appraisals(limit=10):
     # Fallback to SQLite
     conn = get_sqlite_connection()
     cursor = conn.cursor()
-    cursor.execute('SELECT a.*, c.name as company_name FROM appraisal_records a JOIN companies c ON a.company_id = c.id ORDER BY a.created_at DESC LIMIT ?', (limit,))
+    if tenant_id:
+        cursor.execute('SELECT a.*, c.name as company_name FROM appraisal_records a JOIN companies c ON a.company_id = c.id WHERE a.institution_id = ? ORDER BY a.created_at DESC LIMIT ?', (tenant_id, limit))
+    else:
+        cursor.execute('SELECT a.*, c.name as company_name FROM appraisal_records a JOIN companies c ON a.company_id = c.id ORDER BY a.created_at DESC LIMIT ?', (limit,))
     columns = [column[0] for column in cursor.description]
     results = []
     for row in cursor.fetchall():
@@ -388,8 +494,8 @@ def get_recent_appraisals(limit=10):
     conn.close()
     return results
 
-def update_appraisal_status(appraisal_id: str, decision: str, rationale: str) -> bool:
-    """Updates status overrides in both Supabase (primary) and SQLite (fallback)."""
+def update_appraisal_status(appraisal_id: str, decision: str, rationale: str, tenant_id: str = None) -> bool:
+    """Updates status overrides in both Supabase (primary) and SQLite (fallback). Enforces tenant isolation."""
     sb = _get_supabase()
     status_map = {
         "APPROVE": "APPROVED",
@@ -402,14 +508,15 @@ def update_appraisal_status(appraisal_id: str, decision: str, rationale: str) ->
     supabase_success = False
     if sb:
         try:
-            sb.table("loan_applications") \
-                .update({
-                    "decision": decision,
-                    "status": final_status,
-                    "decision_rationale": rationale
-                }) \
-                .eq("id", appraisal_id) \
-                .execute()
+            query = sb.table("loan_applications").update({
+                "decision": decision,
+                "status": final_status,
+                "decision_rationale": rationale
+            }).eq("id", appraisal_id)
+            if tenant_id:
+                query = query.eq("institution_id", tenant_id)
+                
+            query.execute()
             print(f"[OK] Updated status in Supabase for {appraisal_id}")
             supabase_success = True
         except Exception as e:
@@ -419,13 +526,25 @@ def update_appraisal_status(appraisal_id: str, decision: str, rationale: str) ->
     try:
         conn = get_sqlite_connection()
         cursor = conn.cursor()
-        cursor.execute('''UPDATE appraisal_records 
-            SET decision = ?, decision_rationale = ? 
-            WHERE id = ?''', (decision, rationale, appraisal_id))
+        
+        if tenant_id:
+            cursor.execute('''UPDATE appraisal_records 
+                SET decision = ?, decision_rationale = ? 
+                WHERE id = ? AND institution_id = ?''', (decision, rationale, appraisal_id, tenant_id))
+            if cursor.rowcount > 0:
+                sqlite_success = True
+        else:
+            cursor.execute('''UPDATE appraisal_records 
+                SET decision = ?, decision_rationale = ? 
+                WHERE id = ?''', (decision, rationale, appraisal_id))
+            if cursor.rowcount > 0:
+                sqlite_success = True
+                
         conn.commit()
         conn.close()
-        print(f"[OK] Updated status in SQLite for {appraisal_id}")
-        sqlite_success = True
+        
+        if sqlite_success:
+            print(f"[OK] Updated status in SQLite for {appraisal_id}")
     except Exception as e:
         print(f"[ERROR] SQLite status update error: {e}")
         

@@ -7,6 +7,8 @@
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from fastapi import Depends
+from app.security.dependencies import require_role
 from app.agents.input.structured_data import StructuredDataAgent
 
 router = APIRouter()
@@ -46,7 +48,7 @@ class BankStatementRequest(BaseModel):
     )
 
 
-@router.post("/gst")
+@router.post("/gst", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin", "Auditor"]))])
 async def fetch_gst(request_data: GstRequest):
     """Retrieve structured GST filing data for a given GSTIN."""
     try:
@@ -73,7 +75,7 @@ async def fetch_gst(request_data: GstRequest):
         )
 
 
-@router.post("/itr")
+@router.post("/itr", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin", "Auditor"]))])
 async def fetch_itr(request_data: ItrRequest):
     """Retrieve structured Income Tax Return data for a given PAN."""
     try:
@@ -100,7 +102,7 @@ async def fetch_itr(request_data: ItrRequest):
         )
 
 
-@router.post("/bank-statement")
+@router.post("/bank-statement", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin", "Auditor"]))])
 async def fetch_bank_statement(request_data: BankStatementRequest):
     """Retrieve structured bank statement data for a given Account ID."""
     try:

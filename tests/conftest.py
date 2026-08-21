@@ -11,6 +11,11 @@ import pytest
 from fastapi.testclient import TestClient
 from app.main import app
 from app.database.database import init_db, DB_PATH
+import uuid
+from app.database.database import get_sqlite_connection
+from app.security.auth_service import hash_password
+
+from app.security.dependencies import get_current_user_and_session
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_environment():
@@ -22,6 +27,25 @@ def setup_test_environment():
 def client():
     """Returns a FastAPI TestClient instance for testing routes."""
     return TestClient(app)
+
+@pytest.fixture
+def admin_headers(client):
+    conn = get_sqlite_connection()
+    c = conn.cursor()
+    user_id = str(uuid.uuid4())
+    email = f"admin_{uuid.uuid4()}@example.com"
+    password = "password123"
+    c.execute("INSERT INTO users (id, email, password_hash, mfa_enabled, is_active, is_locked, failed_login_count) VALUES (?, ?, ?, 0, 1, 0, 0)",
+              (user_id, email, hash_password(password)))
+    c.execute("INSERT INTO tenant_memberships (user_id, tenant_id, role, is_active) VALUES (?, ?, ?, 1)",
+              (user_id, "DEFAULT", "Admin"))
+    conn.commit()
+    conn.close()
+
+    res = client.post("/api/v1/auth/login", json={"email": email, "password": password})
+    client.cookies.clear()
+    token = res.json().get("access_token")
+    return {"Authorization": f"Bearer {token}"}
 
 @pytest.fixture
 def sample_policy_payload():

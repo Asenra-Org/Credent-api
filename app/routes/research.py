@@ -8,6 +8,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional
+from fastapi import Depends
+from app.security.dependencies import require_role
 from app.agents.input.realtime_intelligence import RealtimeIntelligenceAgent
 from app.agents.analysis.risk_intelligence import RiskIntelligenceAgent
 
@@ -36,7 +38,7 @@ class AdjustScoreRequest(BaseModel):
     qualitative_notes: str = ""
 
 
-@router.post("/web-research")
+@router.post("/web-research", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin", "Auditor"]))])
 async def run_secondary_research(raw_request: Request):
     """Run a live web search for company news and sector headwinds."""
     try:
@@ -77,7 +79,7 @@ async def run_secondary_research(raw_request: Request):
         )
 
 
-@router.post("/adjust-score")
+@router.post("/adjust-score", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin"]))])
 async def apply_qualitative_insights(raw_request: Request):
     """Adjust a credit score based on a human credit officer's field notes."""
     try:
