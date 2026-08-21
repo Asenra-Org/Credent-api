@@ -6,7 +6,8 @@
 # =============================================================================
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, Header, Depends
 from pydantic import BaseModel, ValidationError, Field
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+# from typing import Dict, Any
 from datetime import datetime, timezone
 from fastapi import Depends
 from app.security.dependencies import require_role, get_current_tenant, get_current_user_and_session
@@ -52,6 +53,8 @@ class CAMRequest(BaseModel):
 class StatusUpdate(BaseModel):
     decision: str  # APPROVE, REJECT, MANUAL REVIEW
     rationale: str
+    override_reason: Optional[str] = None
+    is_override: bool = False
 
 # Default CAM when everything fails
 def _default_cam(score: int) -> dict:
@@ -74,27 +77,27 @@ from app.database.database import save_appraisal
 
 @router.patch("/update-status/{appraisal_id}", dependencies=[Depends(require_role(["Credit Manager", "Admin"]))])
 async def update_loan_status(
-    appraisal_id: str, 
+    appraisal_id: str,
     update: StatusUpdate,
     tenant_id: str = Depends(get_current_tenant),
     user_ctx: dict = Depends(get_current_user_and_session)
 ):
     """Formally Approve or Reject a loan in Supabase (Primary) and SQLite (Fallback)."""
     user_id = user_ctx["user_id"]
-    
+
     conn = get_sqlite_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        
+
         cursor = conn.cursor()
-        cursor.execute('''UPDATE appraisal_records 
-            SET decision = ?, decision_rationale = ? 
-            WHERE id = ? AND institution_id = ?''', (update.decision, update.rationale, appraisal_id, tenant_id))
-            
+        cursor.execute('''UPDATE appraisal_records
+            SET decision = ?, decision_rationale = ?, override_reason = ?, is_override = ?
+            WHERE id = ? AND institution_id = ?''', (update.decision, update.rationale, update.override_reason, 1 if update.is_override else 0, appraisal_id, tenant_id))
+
         if cursor.rowcount == 0:
             conn.rollback()
             raise HTTPException(status_code=404, detail="Appraisal not found or access denied.")
-            
+
         create_audit_event(
             conn=conn,
             tenant_id=tenant_id,
@@ -102,9 +105,14 @@ async def update_loan_status(
             action="STATUS_UPDATED",
             resource_type="appraisal_records",
             resource_id=appraisal_id,
-            new_state={"decision": update.decision, "rationale": update.rationale}
+            new_state={
+                "decision": update.decision,
+                "rationale": update.rationale,
+                "override_reason": update.override_reason,
+                "is_override": update.is_override
+            }
         )
-        
+
         conn.commit()
     except HTTPException:
         raise
@@ -120,18 +128,20 @@ async def update_loan_status(
         "MANUAL": "UNDER_REVIEW"
     }
     final_status = status_map.get(update.decision, "UNDER_REVIEW")
-    
+
     # Best-effort Supabase sync
     if supabase:
         try:
             supabase.table("loan_applications").update({
                 "decision": update.decision,
                 "status": final_status,
-                "decision_rationale": update.rationale
+                "decision_rationale": update.rationale,
+                "override_reason": update.override_reason,
+                "is_override": update.is_override
             }).eq("id", appraisal_id).eq("institution_id", tenant_id).execute()
         except Exception:
             pass
-            
+
     return {"status": "success", "message": f"Loan {update.decision} (Status: {final_status}) updated successfully."}
 
 @router.post("/approve/{case_id}", dependencies=[Depends(require_role(["Credit Manager", "Admin"]))])
