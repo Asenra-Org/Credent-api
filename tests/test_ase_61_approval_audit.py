@@ -44,7 +44,7 @@ def test_status_update_pydantic_model_with_override_and_frontend_extras():
 def test_dual_write_update_status_no_override():
     """Verify update_appraisal_status persists normal decision without override."""
     appraisal_id = "APPRAISAL_NORMAL_001"
-    
+
     # Pre-populate record in SQLite
     conn = get_sqlite_connection()
     cursor = conn.cursor()
@@ -78,7 +78,7 @@ def test_dual_write_update_status_no_override():
 def test_dual_write_update_status_with_override():
     """Verify update_appraisal_status persists structured override fields."""
     appraisal_id = "APPRAISAL_OVERRIDE_002"
-    
+
     conn = get_sqlite_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -113,7 +113,7 @@ def test_dual_write_update_status_with_override():
 def test_patch_update_status_route_no_override(client):
     """Verify PATCH /api/v1/reports/update-status/{id} handles backward-compatible payload without override."""
     appraisal_id = "APPRAISAL_ROUTE_003"
-    
+
     conn = get_sqlite_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -147,7 +147,7 @@ def test_patch_update_status_route_no_override(client):
 def test_patch_update_status_route_with_override(client):
     """Verify PATCH /api/v1/reports/update-status/{id} persists override_reason and is_override structured data."""
     appraisal_id = "APPRAISAL_ROUTE_004"
-    
+
     conn = get_sqlite_connection()
     cursor = conn.cursor()
     cursor.execute(
