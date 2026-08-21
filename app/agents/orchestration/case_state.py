@@ -63,6 +63,13 @@ class LoanCaseState:
     evidence_trail: list = field(default_factory=list)
     final_result: dict = field(default_factory=dict)
 
+    # [ASE-63] HITL Override & Audit fields
+    pause_reason: str = None
+    manager_decision: str = None
+    manager_rationale: str = None
+    reviewed_by: str = None
+    reviewed_at: str = None
+
     # Timestamps
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -130,6 +137,13 @@ class LoanCaseState:
         state.integrity_result = result_data.get("integrity_result", {})
         state.evidence_trail = result_data.get("evidence_trail", [])  # [W7] restore for evidence checkpoint
         state.has_gst_bank_data = result_data.get("has_gst_bank_data", True)  # [W7] restore routing flag
+
+        # [ASE-63] restore HITL overrides and audit fields
+        state.pause_reason = result_data.get("pause_reason")
+        state.manager_decision = result_data.get("manager_decision")
+        state.manager_rationale = result_data.get("manager_rationale")
+        state.reviewed_by = result_data.get("reviewed_by")
+        state.reviewed_at = result_data.get("reviewed_at")
         return state
 
     def to_snapshot(self) -> dict:
@@ -142,4 +156,9 @@ class LoanCaseState:
             "integrity_result": self.integrity_result,
             "evidence_trail": self.evidence_trail,
             "has_gst_bank_data": self.has_gst_bank_data,  # [W7] persist routing flag
+            "pause_reason": self.pause_reason,
+            "manager_decision": self.manager_decision,
+            "manager_rationale": self.manager_rationale,
+            "reviewed_by": self.reviewed_by,
+            "reviewed_at": self.reviewed_at,
         }
