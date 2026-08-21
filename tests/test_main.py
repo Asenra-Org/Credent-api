@@ -8,13 +8,13 @@ def test_health_check(client):
     assert "status" in data
     assert data["status"] in ["healthy", "degraded"]
 
-def test_empty_file_upload(client):
+def test_empty_file_upload(client, admin_headers):
     """
     Test boundary upload with an empty file to the ingestion endpoint.
     """
     # Endpoint expects multipart/form-data with a 'file'
     files = {"file": ("empty.pdf", b"", "application/pdf")}
-    response = client.post("/api/v1/documents/ingest/pdf", files=files)
+    response = client.post("/api/v1/documents/ingest/pdf", files=files, headers=admin_headers)
     
     # Based on our routes/documents.py logic, it should return 400 with a specific message
     assert response.status_code == 400
@@ -22,11 +22,11 @@ def test_empty_file_upload(client):
     assert "detail" in data
     assert data["detail"] == "Uploaded file is empty."
 
-def test_financial_health_endpoint(client):
+def test_financial_health_endpoint(client, admin_headers):
     """
     Test the /api/v1/analysis/financial-health endpoint.
     """
-    response = client.get("/api/v1/analysis/financial-health?company_name=TestCompany")
+    response = client.get("/api/v1/analysis/financial-health?company_name=TestCompany", headers=admin_headers)
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "success"
@@ -36,11 +36,11 @@ def test_financial_health_endpoint(client):
     assert "cash_flow_assessment" in data
     assert "current_ratio" in data["ratios"]
 
-def test_management_quality_endpoint(client):
+def test_management_quality_endpoint(client, admin_headers):
     """
     Test the /api/v1/analysis/management-quality endpoint.
     """
-    response = client.get("/api/v1/analysis/management-quality?company_name=TestCompany")
+    response = client.get("/api/v1/analysis/management-quality?company_name=TestCompany", headers=admin_headers)
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "error"
@@ -51,11 +51,11 @@ def test_management_quality_endpoint(client):
     assert "governance_assessment" in data
     assert len(data["promoter_analysis"]) == 0
 
-def test_sector_context_endpoint(client):
+def test_sector_context_endpoint(client, admin_headers):
     """
     Test the /api/v1/analysis/sector-context endpoint.
     """
-    response = client.get("/api/v1/analysis/sector-context?sector=Technology")
+    response = client.get("/api/v1/analysis/sector-context?sector=Technology", headers=admin_headers)
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "success"

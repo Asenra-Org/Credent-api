@@ -8,6 +8,10 @@ from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, Header, 
 from pydantic import BaseModel, ValidationError, Field
 from typing import Dict, Any
 from datetime import datetime, timezone
+from fastapi import Depends
+from app.security.dependencies import require_role, get_current_tenant, get_current_user_and_session
+from app.security.audit_service import create_audit_event
+from app.database.database import get_sqlite_connection
 import os
 
 router = APIRouter()
@@ -66,15 +70,49 @@ def _default_cam(score: int) -> dict:
         "decision_rationale": f"AI analysis unavailable. Score: {score}/100. Decision based on threshold (60). Manual review strongly recommended."
     }
 
-from app.database.database import save_appraisal, update_appraisal_status
+from app.database.database import save_appraisal
 
-@router.patch("/update-status/{appraisal_id}")
-async def update_loan_status(appraisal_id: str, update: StatusUpdate):
+@router.patch("/update-status/{appraisal_id}", dependencies=[Depends(require_role(["Credit Manager", "Admin"]))])
+async def update_loan_status(
+    appraisal_id: str, 
+    update: StatusUpdate,
+    tenant_id: str = Depends(get_current_tenant),
+    user_ctx: dict = Depends(get_current_user_and_session)
+):
     """Formally Approve or Reject a loan in Supabase (Primary) and SQLite (Fallback)."""
-    success = update_appraisal_status(appraisal_id, update.decision, update.rationale)
-    if not success:
+    user_id = user_ctx["user_id"]
+    
+    conn = get_sqlite_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        
+        cursor = conn.cursor()
+        cursor.execute('''UPDATE appraisal_records 
+            SET decision = ?, decision_rationale = ? 
+            WHERE id = ? AND institution_id = ?''', (update.decision, update.rationale, appraisal_id, tenant_id))
+            
+        if cursor.rowcount == 0:
+            conn.rollback()
+            raise HTTPException(status_code=404, detail="Appraisal not found or access denied.")
+            
+        create_audit_event(
+            conn=conn,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            action="STATUS_UPDATED",
+            resource_type="appraisal_records",
+            resource_id=appraisal_id,
+            new_state={"decision": update.decision, "rationale": update.rationale}
+        )
+        
+        conn.commit()
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
         raise HTTPException(status_code=500, detail="Failed to update application status across database backends.")
-
+    finally:
+        conn.close()
     status_map = {
         "APPROVE": "APPROVED",
         "REJECT": "REJECTED",
@@ -82,33 +120,29 @@ async def update_loan_status(appraisal_id: str, update: StatusUpdate):
         "MANUAL": "UNDER_REVIEW"
     }
     final_status = status_map.get(update.decision, "UNDER_REVIEW")
+    
+    # Best-effort Supabase sync
+    if supabase:
+        try:
+            supabase.table("loan_applications").update({
+                "decision": update.decision,
+                "status": final_status,
+                "decision_rationale": update.rationale
+            }).eq("id", appraisal_id).eq("institution_id", tenant_id).execute()
+        except Exception:
+            pass
+            
     return {"status": "success", "message": f"Loan {update.decision} (Status: {final_status}) updated successfully."}
 
-# =============================================================================
-# Authentication Dependency Seam
-# =============================================================================
-async def get_current_manager(request: Request) -> str:
-    """
-    [ASE-63] Security Seam
-    MOCK IMPLEMENTATION ONLY.
-    In production, this MUST validate a JWT/OAuth2 token or session cookie.
-    We fail closed if the environment does not explicitly enable mock auth.
-    """
-    if os.environ.get("ENABLE_MOCK_AUTH") != "True":
-        raise HTTPException(
-            status_code=501,
-            detail="Authentication not configured. Production requires a real JWT/RBAC middleware."
-        )
-    return "MOCK_MGR_001"
-
-@router.post("/approve/{case_id}")
+@router.post("/approve/{case_id}", dependencies=[Depends(require_role(["Credit Manager", "Admin"]))])
 async def manager_approve_case(
     case_id: str,
     update: StatusUpdate,
     background_tasks: BackgroundTasks,
-    manager_identity: str = Depends(get_current_manager)
+    user_ctx: dict = Depends(get_current_user_and_session)
 ):
     """[ASE-63] Resumes a PAUSED pipeline with an authenticated manager override."""
+    manager_identity = user_ctx["user_id"]
 
     from app.database.database import get_case, update_case_result
 
@@ -147,8 +181,11 @@ async def manager_approve_case(
         "reviewed_by": manager_identity
     }
 
-@router.post("/generate-cam")
-async def generate_credit_appraisal_memo(raw_request: Request):
+@router.post("/generate-cam", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin"]))])
+async def generate_credit_appraisal_memo(
+    raw_request: Request,
+    tenant_id: str = Depends(get_current_tenant)
+):
     """Generate the final CAM and decision rationale."""
     try:
         # Parse JSON body
@@ -201,7 +238,8 @@ async def generate_credit_appraisal_memo(raw_request: Request):
                     "financial_ratios": request.financial_ratios or {},
                     "management_score": request.management_score,
                     "promoter_analysis": request.promoter_analysis,
-                    "governance_assessment": request.governance_assessment
+                    "governance_assessment": request.governance_assessment,
+                    "institution_id": tenant_id
                 })
             except Exception as save_err:
                 print(f"[WARN] Failed to save appraisal to Cloud: {save_err}")

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 # Contract / Schema Validation Tests
 # ---------------------------------------------------------------------------
 
-def test_response_payload_contract_keys_and_types(client):
+def test_response_payload_contract_keys_and_types(client, admin_headers):
     """Verify endpoint response returns exactly the required keys and types, with no unexpected keys."""
     mock_appraisal = {
         "status": "success",
@@ -31,7 +31,7 @@ def test_response_payload_contract_keys_and_types(client):
          patch("app.routes.analysis.save_appraisal", MagicMock(return_value="REC_123")):
 
         payload = {"file_path": "statement.pdf"}
-        response = client.post("/api/v1/analysis/appraise", json=payload)
+        response = client.post("/api/v1/analysis/appraise", json=payload, headers=admin_headers)
         
         assert response.status_code == 200
         data = response.json()
@@ -67,9 +67,9 @@ def test_regression_get_health(client):
     assert "status" in data
     assert data["status"] in ["healthy", "degraded"]
 
-def test_regression_get_financial_health(client):
+def test_regression_get_financial_health(client, admin_headers):
     """Ensure that GET /api/v1/analysis/financial-health remains functional."""
-    response = client.get("/api/v1/analysis/financial-health?company_name=Asenra")
+    response = client.get("/api/v1/analysis/financial-health?company_name=Asenra", headers=admin_headers)
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "success"
@@ -77,9 +77,9 @@ def test_regression_get_financial_health(client):
     assert "financial_health_score" in data
     assert "ratios" in data
 
-def test_regression_get_management_quality(client):
+def test_regression_get_management_quality(client, admin_headers):
     """Ensure that GET /api/v1/analysis/management-quality remains functional."""
-    response = client.get("/api/v1/analysis/management-quality?company_name=Asenra")
+    response = client.get("/api/v1/analysis/management-quality?company_name=Asenra", headers=admin_headers)
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "error"

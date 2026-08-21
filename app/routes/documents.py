@@ -176,9 +176,22 @@ MAX_FILE_SIZE = 20 * 1024 * 1024
 from app.agents.orchestration.coordinator import AgentCoordinator
 from app.database.database import save_appraisal, get_case
 
-@router.post("/ingest/pdf")
-async def ingest_pdf_document(file: UploadFile = File(...), institution_id: str = "DEFAULT", case_id: str = Form(None)):
+from app.security.dependencies import require_role, get_current_tenant
+from fastapi import Depends
+
+@router.post("/ingest/pdf", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin"]))])
+async def ingest_pdf_document(
+    file: UploadFile = File(...), 
+    institution_id: str = "DEFAULT", 
+    case_id: str = Form(None),
+    tenant_id: str = Depends(get_current_tenant)
+):
     """Upload a PDF document, trigger full multi-agent credit appraisal, and persist record."""
+    if institution_id != "DEFAULT" and institution_id != tenant_id:
+        raise HTTPException(status_code=403, detail="institution_id mismatch with authenticated tenant")
+    
+    # Force tenant_id as authoritative
+    institution_id = tenant_id
 
     # Validate filename
     if not file.filename:
@@ -298,10 +311,10 @@ async def ingest_pdf_document(file: UploadFile = File(...), institution_id: str 
         except Exception:
             pass
 
-@router.get("/ingest/status/{case_id}")
-async def get_case_status(case_id: str):
+@router.get("/ingest/status/{case_id}", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin", "Auditor"]))])
+async def get_case_status(case_id: str, tenant_id: str = Depends(get_current_tenant)):
     """Fetch the real-time processing status of a credit appraisal case."""
-    db_record = get_case(case_id)
+    db_record = get_case(case_id, tenant_id=tenant_id)
     if not db_record:
         raise HTTPException(status_code=404, detail="Case not found.")
     
@@ -320,12 +333,16 @@ async def get_case_status(case_id: str):
 # ASE-52: Batch Ingestion Endpoint — Async Queue + Supabase Storage
 # =============================================================================
 
-@router.post("/ingest/batch")
+@router.post("/ingest/batch", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin"]))])
 async def ingest_batch_documents(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
     institution_id: str = Form(default="DEFAULT"),
+    tenant_id: str = Depends(get_current_tenant)
 ):
+    if institution_id != "DEFAULT" and institution_id != tenant_id:
+        raise HTTPException(status_code=403, detail="institution_id mismatch with authenticated tenant")
+    institution_id = tenant_id
     """
     Batch document upload endpoint (ASE-52).
 

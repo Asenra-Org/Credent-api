@@ -9,10 +9,13 @@ from app.database.database import get_recent_appraisals
 
 router = APIRouter()
 
-@router.get("/recent")
-async def fetch_recent_appraisals(limit: int = 10):
+from fastapi import Depends
+from app.security.dependencies import require_role, get_current_tenant
+
+@router.get("/recent", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin", "Auditor"]))])
+async def fetch_recent_appraisals(limit: int = 10, tenant_id: str = Depends(get_current_tenant)):
     try:
-        appraisals = get_recent_appraisals(limit)
+        appraisals = get_recent_appraisals(limit, tenant_id=tenant_id)
         # Format for frontend consistency if needed
         # (e.g., date formats, or mapping IDs)
         return {"status": "success", "data": appraisals}
