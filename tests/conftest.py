@@ -27,6 +27,11 @@ os.environ.setdefault('GROQ_API_KEY', 'dummy-key-for-tests')
 from fastapi.testclient import TestClient
 from app.main import app
 from app.database.database import init_db, DB_PATH
+import uuid
+from app.database.database import get_sqlite_connection
+from app.security.auth_service import hash_password
+
+from app.security.dependencies import get_current_user_and_session
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_environment():
@@ -46,11 +51,11 @@ def mock_groq_network_calls(monkeypatch):
         from langchain_groq import ChatGroq
         from langchain_core.messages import AIMessage
         from unittest.mock import AsyncMock
-        
+
         # This prevents normal ainvoke calls from hitting the network
         mock_ainvoke = AsyncMock(return_value=AIMessage(content="{}"))
         monkeypatch.setattr(ChatGroq, "ainvoke", mock_ainvoke)
-        
+
         # This prevents with_structured_output from hitting the network
         mock_agenerate = AsyncMock()
         from langchain_core.outputs import LLMResult, ChatGeneration
@@ -64,6 +69,25 @@ def mock_groq_network_calls(monkeypatch):
 def client():
     """Returns a FastAPI TestClient instance for testing routes."""
     return TestClient(app)
+
+@pytest.fixture
+def admin_headers(client):
+    conn = get_sqlite_connection()
+    c = conn.cursor()
+    user_id = str(uuid.uuid4())
+    email = f"admin_{uuid.uuid4()}@example.com"
+    password = "password123"
+    c.execute("INSERT INTO users (id, email, password_hash, mfa_enabled, is_active, is_locked, failed_login_count) VALUES (?, ?, ?, 0, 1, 0, 0)",
+              (user_id, email, hash_password(password)))
+    c.execute("INSERT INTO tenant_memberships (user_id, tenant_id, role, is_active) VALUES (?, ?, ?, 1)",
+              (user_id, "DEFAULT", "Admin"))
+    conn.commit()
+    conn.close()
+
+    res = client.post("/api/v1/auth/login", json={"email": email, "password": password})
+    client.cookies.clear()
+    token = res.json().get("access_token")
+    return {"Authorization": f"Bearer {token}"}
 
 @pytest.fixture
 def sample_policy_payload():
@@ -87,16 +111,16 @@ def dummy_pdf_file():
     """Generates a temporary dummy PDF file for testing file upload routes."""
     temp_dir = tempfile.mkdtemp()
     file_path = os.path.join(temp_dir, "test_statement.pdf")
-    
+
     # Write a simple valid PDF header & minimal content
     with open(file_path, "wb") as f:
         f.write(b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
         f.write(b"2 0 obj\n<< /Type /Pages /Kinds [] /Count 0 >>\nendobj\n")
         f.write(b"xref\n0 3\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n")
         f.write(b"trailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n109\n%%EOF\n")
-        
+
     yield file_path
-    
+
     # Cleanup after test execution
     if os.path.exists(file_path):
         try:

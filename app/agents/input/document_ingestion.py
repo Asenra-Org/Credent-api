@@ -1025,7 +1025,7 @@ class DocumentIngestionAgent:
 
         # Limit text to avoid token overflow
         truncated_text = raw_text[:30000]   # Limit text to avoid token overflow
-        
+
 
         # Helper to clean citations
         def _clean_citations(citations_data: Any) -> dict:

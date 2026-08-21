@@ -2,11 +2,13 @@
 # CREDENT — ASE-61: Human Approval Workflow Audit Persistence Tests
 # A product of Asenra | https://asenra.in
 # Copyright (c) 2026 Asenra. All rights reserved.
-# =============================================================================
-
+import os
 import pytest
 import sqlite3
 from fastapi.testclient import TestClient
+
+os.environ.setdefault("AUDIT_HMAC_SECRET", "test_secret_for_audit_hmac_1234567890")
+
 from app.routes.reports import StatusUpdate
 from app.database.database import (
     init_db,
@@ -110,14 +112,14 @@ def test_dual_write_update_status_with_override():
     assert row[2] == "Litigation dismissed by High Court as per certified order copy."
     assert row[3] == 1
 
-def test_patch_update_status_route_no_override(client):
+def test_patch_update_status_route_no_override(client, admin_headers):
     """Verify PATCH /api/v1/reports/update-status/{id} handles backward-compatible payload without override."""
     appraisal_id = "APPRAISAL_ROUTE_003"
 
     conn = get_sqlite_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT OR REPLACE INTO appraisal_records (id, company_id, decision, decision_rationale) VALUES (?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO appraisal_records (id, company_id, decision, decision_rationale, institution_id) VALUES (?, ?, ?, ?, 'DEFAULT')",
         (appraisal_id, "COMP_003", "PENDING", "Pending review")
     )
     conn.commit()
@@ -127,7 +129,7 @@ def test_patch_update_status_route_no_override(client):
         "decision": "REJECT",
         "rationale": "Current ratio below policy threshold."
     }
-    response = client.patch(f"/api/v1/reports/update-status/{appraisal_id}", json=payload)
+    response = client.patch(f"/api/v1/reports/update-status/{appraisal_id}", json=payload, headers=admin_headers)
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "success"
@@ -144,14 +146,14 @@ def test_patch_update_status_route_no_override(client):
     assert row[2] is None
     assert row[3] == 0
 
-def test_patch_update_status_route_with_override(client):
+def test_patch_update_status_route_with_override(client, admin_headers):
     """Verify PATCH /api/v1/reports/update-status/{id} persists override_reason and is_override structured data."""
     appraisal_id = "APPRAISAL_ROUTE_004"
 
     conn = get_sqlite_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT OR REPLACE INTO appraisal_records (id, company_id, decision, decision_rationale) VALUES (?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO appraisal_records (id, company_id, decision, decision_rationale, institution_id) VALUES (?, ?, ?, ?, 'DEFAULT')",
         (appraisal_id, "COMP_004", "REJECT", "Low initial credit score")
     )
     conn.commit()
@@ -166,7 +168,7 @@ def test_patch_update_status_route_with_override(client):
         "ai_recommendation": "REJECT",
         "timestamp": "2026-08-21T00:55:30Z"
     }
-    response = client.patch(f"/api/v1/reports/update-status/{appraisal_id}", json=payload)
+    response = client.patch(f"/api/v1/reports/update-status/{appraisal_id}", json=payload, headers=admin_headers)
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "success"

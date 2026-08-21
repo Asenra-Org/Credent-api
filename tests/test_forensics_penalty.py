@@ -388,23 +388,23 @@ class TestForensicsPenaltyRouteIntegration:
     def mock_downstream_agents(self, monkeypatch):
         """Mock downstream agents to prevent HITL pauses during integration tests."""
         from unittest.mock import AsyncMock
-        
+
         # Mock ManagementQualityAgent
         mock_mqa = AsyncMock()
         mock_mqa.analyze.return_value = {"management_score": 90, "requires_manual_review": False}
         monkeypatch.setattr("app.agents.orchestration.coordinator.ManagementQualityAgent", lambda: mock_mqa)
-        
+
         # Mock SectorContextAgent
         mock_sca = AsyncMock()
         mock_sca.get_sector_outlook.return_value = {"risk_factors": [], "sector": "Manufacturing"}
         monkeypatch.setattr("app.agents.orchestration.coordinator.SectorContextAgent", lambda: mock_sca)
-        
+
         # Mock IntegrityVerificationAgent
         mock_iva = AsyncMock()
         mock_iva.cross_validate.return_value = {"status": "success", "flags": []}
         monkeypatch.setattr("app.agents.orchestration.coordinator.IntegrityVerificationAgent", lambda: mock_iva)
 
-    def test_suspicious_document_reduces_base_score_by_15(self, client, tmp_path, monkeypatch):
+    def test_suspicious_document_reduces_base_score_by_15(self, client, admin_headers, tmp_path, monkeypatch):
         """
         End-to-end: when run_pdf_forensics returns is_suspicious=True and
         parse_financial_statement returns base_score=80, the response must
@@ -441,6 +441,7 @@ class TestForensicsPenaltyRouteIntegration:
             response = client.post(
                 "/api/v1/documents/ingest/pdf",
                 files={"file": ("test_report.pdf", pdf_bytes, "application/pdf")},
+                headers=admin_headers
             )
 
         assert response.status_code == 200
@@ -459,7 +460,7 @@ class TestForensicsPenaltyRouteIntegration:
         assert "forensics" in body
         assert body["forensics"]["is_suspicious"] is True
 
-    def test_clean_document_score_unchanged(self, client, monkeypatch):
+    def test_clean_document_score_unchanged(self, client, admin_headers, monkeypatch):
         """
         When is_suspicious=False the base_score must not change at all.
         """
@@ -494,6 +495,7 @@ class TestForensicsPenaltyRouteIntegration:
             response = client.post(
                 "/api/v1/documents/ingest/pdf",
                 files={"file": ("clean_report.pdf", pdf_bytes, "application/pdf")},
+                headers=admin_headers
             )
 
         assert response.status_code == 200
@@ -507,7 +509,7 @@ class TestForensicsPenaltyRouteIntegration:
         # base_score unchanged
         assert body["ai_analysis"]["base_score"] == 75
 
-    def test_response_schema_contains_all_existing_keys(self, client):
+    def test_response_schema_contains_all_existing_keys(self, client, admin_headers):
         """
         All keys that existed in the API response BEFORE AI-A-W4 must still
         be present. forensics_penalty is additive — nothing was removed.
@@ -539,6 +541,7 @@ class TestForensicsPenaltyRouteIntegration:
             response = client.post(
                 "/api/v1/documents/ingest/pdf",
                 files={"file": ("schema_test.pdf", pdf_bytes, "application/pdf")},
+                headers=admin_headers
             )
 
         assert response.status_code == 200
@@ -552,7 +555,7 @@ class TestForensicsPenaltyRouteIntegration:
         # New key introduced by AI-A-W4
         assert "forensics_penalty" in body
 
-    def test_score_floor_at_zero_via_route(self, client):
+    def test_score_floor_at_zero_via_route(self, client, admin_headers):
         """
         Integration-level: base_score=5 with is_suspicious=True must produce
         adjusted_score=0 in the response, never negative.
@@ -582,6 +585,7 @@ class TestForensicsPenaltyRouteIntegration:
             response = client.post(
                 "/api/v1/documents/ingest/pdf",
                 files={"file": ("low_score.pdf", pdf_bytes, "application/pdf")},
+                headers=admin_headers
             )
 
         assert response.status_code == 200

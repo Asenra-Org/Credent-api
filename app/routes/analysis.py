@@ -14,6 +14,8 @@ from app.agents.analysis.management_quality import ManagementQualityAgent
 from app.agents.analysis.sector_context import SectorContextAgent
 from app.agents.orchestration.coordinator import AgentCoordinator
 from app.database.database import save_appraisal
+from app.security.dependencies import require_role, get_current_tenant, get_current_user_and_session
+from fastapi import Depends
 
 router = APIRouter()
 
@@ -118,7 +120,7 @@ class SectorContextResponse(BaseModel):
 
 # --- Endpoint Handlers ---
 
-@router.post("/integrity-check")
+@router.post("/integrity-check", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin", "Auditor"]))])
 async def check_data_integrity(raw_request: Request):
     """Cross-validate GST returns against Bank Statements to detect fraud."""
     try:
@@ -158,7 +160,7 @@ async def check_data_integrity(raw_request: Request):
         )
 
 
-@router.get("/financial-health", response_model=FinancialHealthResponse)
+@router.get("/financial-health", response_model=FinancialHealthResponse, dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin", "Auditor"]))])
 async def get_financial_health(company_name: str = "Asenra Corp"):
     """Evaluate financial health, cash flows, and balance sheet metrics for a company."""
     if financial_agent is None:
@@ -195,7 +197,7 @@ async def get_financial_health(company_name: str = "Asenra Corp"):
     )
 
 
-@router.get("/management-quality", response_model=ManagementQualityResponse)
+@router.get("/management-quality", response_model=ManagementQualityResponse, dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin", "Auditor"]))])
 async def get_management_quality(company_name: str = "Asenra Corp"):
     """Assess promoter profiles, corporate governance, and management track record."""
     if management_agent is None:
@@ -218,7 +220,7 @@ async def get_management_quality(company_name: str = "Asenra Corp"):
     )
 
 
-@router.get("/sector-context", response_model=SectorContextResponse)
+@router.get("/sector-context", response_model=SectorContextResponse, dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin", "Auditor"]))])
 async def get_sector_context(sector: str = "Manufacturing"):
     """Analyze sector-level macroeconomic factors and RBI regulatory context.
 
@@ -256,7 +258,7 @@ class AppraisalRequest(BaseModel):
     promoter_ids: Optional[List[str]] = Field(default_factory=list, description="Names or IDs of promoters")
 
 
-def _map_to_db_payload(appraisal_id: str, request: AppraisalRequest, appraisal_data: dict) -> dict:
+def _map_to_db_payload(appraisal_id: str, request: AppraisalRequest, appraisal_data: dict, tenant_id: str) -> dict:
     individual_outputs = appraisal_data.get("individual_agent_outputs", {})
     ingestion = individual_outputs.get("ingestion", {})
     fin_health = individual_outputs.get("financial_health", {})
@@ -288,12 +290,17 @@ def _map_to_db_payload(appraisal_id: str, request: AppraisalRequest, appraisal_d
         "financial_ratios": fin_health.get("ratios", {}),
         "management_score": mgt_quality.get("management_score", 0.0),
         "promoter_analysis": mgt_quality.get("promoter_analysis", []),
-        "governance_assessment": mgt_quality.get("governance_assessment", {})
+        "governance_assessment": mgt_quality.get("governance_assessment", {}),
+        "institution_id": tenant_id
     }
 
 
-@router.post("/appraise")
-async def check_credit_appraisal(request: AppraisalRequest):
+@router.post("/appraise", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin"]))])
+async def check_credit_appraisal(
+    request: AppraisalRequest,
+    tenant_id: str = Depends(get_current_tenant),
+    user_ctx: dict = Depends(get_current_user_and_session)
+):
     """Orchestrate full multi-agent credit appraisal workflow."""
     if coordinator is None:
         raise HTTPException(status_code=503, detail="Orchestration service not available.")
@@ -311,7 +318,7 @@ async def check_credit_appraisal(request: AppraisalRequest):
 
         # Save to database (Dual-write with local fallback catch)
         try:
-            db_payload = _map_to_db_payload(appraisal_id, request, appraisal_data)
+            db_payload = _map_to_db_payload(appraisal_id, request, appraisal_data, tenant_id)
             record_id = save_appraisal(db_payload)
             appraisal_data["record_id"] = record_id
         except Exception as db_err:

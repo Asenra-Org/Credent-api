@@ -8,7 +8,7 @@ from app.routes.analysis import AppraisalRequest, _map_to_db_payload
 # Route Endpoint Tests
 # ---------------------------------------------------------------------------
 
-def test_route_appraise_endpoint_success(client):
+def test_route_appraise_endpoint_success(client, admin_headers):
     """Verify POST /api/v1/analysis/appraise returns 200 and saves record."""
     mock_appraisal = {
         "status": "success",
@@ -42,7 +42,7 @@ def test_route_appraise_endpoint_success(client):
             "bank_data": [],
             "promoter_ids": []
         }
-        response = client.post("/api/v1/analysis/appraise", json=payload)
+        response = client.post("/api/v1/analysis/appraise", json=payload, headers=admin_headers)
         
         assert response.status_code == 200
         data = response.json()
@@ -50,15 +50,15 @@ def test_route_appraise_endpoint_success(client):
         assert data["record_id"] == "DB_REC_777"
         assert data["appraisal_id"] == "APPRAISAL_999"
 
-def test_route_appraise_endpoint_validation_failure(client):
+def test_route_appraise_endpoint_validation_failure(client, admin_headers):
     """Verify invalid payloads (e.g. empty file_path) yield 422 errors."""
     payload = {
         "file_path": ""  # Invalid empty path
     }
-    response = client.post("/api/v1/analysis/appraise", json=payload)
+    response = client.post("/api/v1/analysis/appraise", json=payload, headers=admin_headers)
     assert response.status_code == 422
 
-def test_route_appraise_endpoint_persistence_failure_bypassed(client):
+def test_route_appraise_endpoint_persistence_failure_bypassed(client, admin_headers):
     """Verify database write errors do not abort the API request."""
     mock_appraisal = {
         "status": "success",
@@ -84,7 +84,7 @@ def test_route_appraise_endpoint_persistence_failure_bypassed(client):
         payload = {
             "file_path": "valid_statement.pdf"
         }
-        response = client.post("/api/v1/analysis/appraise", json=payload)
+        response = client.post("/api/v1/analysis/appraise", json=payload, headers=admin_headers)
         
         assert response.status_code == 200
         data = response.json()
@@ -112,7 +112,7 @@ def test_adapter_map_to_db_payload_mapping():
         "explanation": "Summary analysis details."
     }
 
-    db_payload = _map_to_db_payload("APP_100", request, coordinator_output)
+    db_payload = _map_to_db_payload("APP_100", request, coordinator_output, "DEFAULT")
     
     assert db_payload["company_id"] == "APP_100"
     assert db_payload["company_name"] == "Asenra"

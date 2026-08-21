@@ -711,34 +711,34 @@ class TestIntegrityFlagsDatabaseWrite:
 
 class TestIntegrityCheckEndpoint:
 
-    def test_endpoint_with_no_data_returns_warning(self, client):
+    def test_endpoint_with_no_data_returns_warning(self, client, admin_headers):
         """Hitting the endpoint with empty gst_data/bank_data should return a graceful warning, not an error."""
         response = client.post("/api/v1/analysis/integrity-check", json={
             "gst_data": [],
             "bank_data": [],
-        })
+        }, headers=admin_headers)
         assert response.status_code == 200
         data = response.json()
         assert data["flags_detected"] == 0
         assert "warning" in data
 
-    def test_endpoint_with_discrepant_data_returns_flags(self, client):
+    def test_endpoint_with_discrepant_data_returns_flags(self, client, admin_headers):
         """Hitting the endpoint with mismatched GST/Bank data should surface real flags via the API."""
         response = client.post("/api/v1/analysis/integrity-check", json={
             "gst_data": [{"taxable_value": 100_000, "type": "SALE", "counterparty_gstin": "GSTIN1"}],
             "bank_data": [{"type": "CREDIT", "amount": 50_000}],
-        })
+        }, headers=admin_headers)
         assert response.status_code == 200
         data = response.json()
         assert data["flags_detected"] >= 1
         assert any(f["flag"] == "Revenue Discrepancy" for f in data["flags"])
 
-    def test_endpoint_monthly_mismatch_surfaced_via_api(self, client):
+    def test_endpoint_monthly_mismatch_surfaced_via_api(self, client, admin_headers):
         """Monthly flags must be surfaced through the /integrity-check endpoint."""
         response = client.post("/api/v1/analysis/integrity-check", json={
             "gst_data": [{"taxable_value": 100_000, "period": "2024-01"}],
             "bank_data": [{"type": "CREDIT", "amount": 40_000, "date": "2024-01-15"}],
-        })
+        }, headers=admin_headers)
         assert response.status_code == 200
         data = response.json()
         monthly_flags = [f for f in data["flags"] if f["flag"] == "Monthly GST-Bank Mismatch"]

@@ -30,7 +30,7 @@ def test_malformed_numeric():
 def test_invalid_enum():
     # pydantic confidence enum fallback
     data = {
-        "company_name": "Co", "sector": "Sec", "base_score": 50, 
+        "company_name": "Co", "sector": "Sec", "base_score": 50,
         "citations": {
             "revenue": {"confidence": "UNKNOWN"}
         }

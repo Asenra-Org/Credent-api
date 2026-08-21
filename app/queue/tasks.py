@@ -36,9 +36,9 @@ def process_batch_item(self, case_id: str, storage_path: str, institution_id: st
     Delegates to the monolithic AppraisalWorker execution.
     """
     from app.services.appraisal_worker import run_appraisal_job
-    
+
     logger.info(f"Executing batch item case_id={case_id}")
-    
+
     # AppraisalWorker requires an event loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
