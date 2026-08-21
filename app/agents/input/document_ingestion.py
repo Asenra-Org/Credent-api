@@ -14,7 +14,7 @@ from app.core.llm import ChatGroqWithFallback as ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from typing import List, Optional, Any, Literal
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 
 from app.agents.security.document_security import DocumentSecurityAgent
 
@@ -332,20 +332,80 @@ class CitationMetadata(BaseModel):
 class RiskExtraction(BaseModel):
     company_name: str = Field(description="The name of the company applying for credit")
     sector: str = Field(description="The industry sector (e.g., Manufacturing, Fintech) inferred from the text")
-    
+
     # NEW: Quantifiable Credit Data (Crucial to prevent ESG-only approvals)
     total_revenue: Optional[Any] = Field(None, description="Annual revenue (turnover)")
     total_debt: Optional[float] = Field(None, description="Total short/long term borrowings")
     shareholder_equity: Optional[Any] = Field(None, description="Net worth / Share capital + reserves")
     current_assets: Optional[float] = Field(None, description="Total current assets")
     current_liabilities: Optional[float] = Field(None, description="Total current liabilities")
-    
+
     base_score: int = Field(description="An estimated starting credit score (0-100)")
     qualitative_notes: Optional[str] = Field(None, description="Summary of operational capacity or CIBIL/GSTR notes")
     financial_commitments: List[str] = Field(default_factory=list, description="Existing loans, guarantees, or credit lines")
     legal_risks: List[str] = Field(default_factory=list, description="Ongoing litigation, defaults, or notices")
     sanction_details: List[str] = Field(default_factory=list, description="Details of limits sanctioned by other banks")
     citations: Optional[CitationMetadata] = Field(None, description="Source citations for key financial metrics")
+
+    @model_validator(mode="before")
+    @classmethod
+    def structural_normalization(cls, values: dict):
+        """
+        [ASE-63] Structural Normalization
+        Safely coerce explicit string hallucination patterns (like "N/A" or "Unknown")
+        for strictly numeric fields to None so Pydantic parsing doesn't crash.
+        This is purely structural; it does NOT do source-grounded semantic validation.
+        """
+        numeric_fields = ["total_revenue", "total_debt", "shareholder_equity", "current_assets", "current_liabilities"]
+
+        for field in numeric_fields:
+            val = values.get(field)
+            if isinstance(val, str):
+                val_lower = val.lower().strip()
+                # Explicit non-value string hallucination patterns
+                if any(x in val_lower for x in ["n/a", "unknown", "unable to extract", "missing", "not found"]):
+                    # If it has no digits, it's safe to coerce to None
+                    if not any(char.isdigit() for char in val_lower):
+                        values[field] = None
+                        continue
+
+                # Strip commas from numbers so Pydantic's float validator can parse it
+                values[field] = val.replace(",", "")
+
+        return values
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_hallucinated_floats(cls, data: Any) -> Any:
+        """[ASE-63] Safely coerce string hallucinations for numeric fields to None."""
+        if not isinstance(data, dict):
+            return data
+
+        numeric_fields = ["total_revenue", "total_debt", "shareholder_equity", "current_assets", "current_liabilities"]
+        for field in numeric_fields:
+            val = data.get(field)
+            if isinstance(val, str):
+                val_lower = val.lower().strip()
+                if any(x in val_lower for x in ["unable", "n/a", "unknown", "missing", "not found", "null"]):
+                    data[field] = None
+                elif not any(c.isdigit() for c in val):
+                    data[field] = None
+                elif data.get(field) is not None:
+                    # Strip commas so Pydantic float validator doesn't crash on '1,00,000'
+                    # normalize_to_inr will still handle the float later.
+                    # We only do this for fields strictly typed as float.
+                    if field in ["total_debt", "current_assets", "current_liabilities"]:
+                        import re
+                        # Extract just the numeric part and decimal to allow Pydantic to parse it.
+                        # Units like 'cr' or 'lakh' will be lost for strict floats, but RiskExtraction
+                        # should ideally use Any like total_revenue. We do our best to prevent crashes.
+                        match = re.search(r'\d+\.?\d*', val.replace(",", ""))
+                        if match:
+                            data[field] = match.group()
+                        else:
+                            data[field] = None
+
+        return data
 
 # Default fallback when all extraction fails
 DEFAULT_EXTRACTION = {
@@ -388,7 +448,7 @@ class DocumentIngestionAgent:
         except Exception as e:
             print(f"[WARN] Structured output init failed: {e}")
             self.structured_llm = None
-        
+
     async def ingest_pdf(self, file_path: str) -> dict:
         """HYBRID EXTRACTION: Tries standard text first, falls back to OCR for messy/scanned PDFs.
 
@@ -1029,7 +1089,7 @@ class DocumentIngestionAgent:
                     document = str(document)
                 if location is not None:
                     location = str(location)
-                
+
                 citation_entry = {
                     "page": page,
                     "snippet": snippet,
@@ -1039,7 +1099,7 @@ class DocumentIngestionAgent:
                 }
                 cleaned[k1] = citation_entry
                 cleaned[k2] = citation_entry
-            
+
             # Carry over calculated metrics if they exist
             for calc_metric in ["dscr", "current_ratio"]:
                 if calc_metric in citations_data and citations_data[calc_metric]:
@@ -1050,7 +1110,7 @@ class DocumentIngestionAgent:
                     elif not isinstance(cd, dict):
                         cd = dict(cd)
                     cleaned[calc_metric] = cd
-                    
+
             return cleaned
 
         # Attempt 1: Structured output
@@ -1059,12 +1119,12 @@ class DocumentIngestionAgent:
                 chain = prompt | self.structured_llm
                 result = await chain.ainvoke({"text": truncated_text})
                 parsed = result.model_dump()
-                
+
                 # NORMALIZE FINANCIALS
                 fin_fields = ["total_revenue", "total_debt", "shareholder_equity", "current_assets", "current_liabilities"]
                 for field in fin_fields:
                     parsed[field] = normalize_to_inr(parsed.get(field))
-                
+
                 parsed["citations"] = _clean_citations(parsed.get("citations"))
                 return parsed
             except Exception as e:
@@ -1076,16 +1136,16 @@ class DocumentIngestionAgent:
             raw_result = await chain.ainvoke({"text": truncated_text})
             raw_response = raw_result.content if hasattr(raw_result, 'content') else str(raw_result)
             parsed = self._extract_json_from_text(raw_response)
-            
+
             # Fill defaults for any missing keys
             for key, default_val in DEFAULT_EXTRACTION.items():
                 parsed.setdefault(key, default_val)
-                
+
             # NORMALIZE FINANCIALS
             fin_fields = ["total_revenue", "total_debt", "shareholder_equity", "current_assets", "current_liabilities"]
             for field in fin_fields:
                 parsed[field] = normalize_to_inr(parsed.get(field))
-            
+
             # Clamp base_score to 0-100
             try:
                 parsed["base_score"] = max(0, min(100, int(parsed["base_score"])))
