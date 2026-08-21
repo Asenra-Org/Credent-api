@@ -388,14 +388,16 @@ def test_sqlite_secondary_index_idx_appraisal_created_at():
             f"Unrecognized query planner output format on baseline dataset: {planner_text_small}"
 
         # 4. Populate moderately populated CI dataset (150 rows)
-        for i in range(150):
-            save_appraisal({
-                "company_id": f"CMP_PERF_{i}",
-                "company_name": f"Performance Test Corp {i}",
-                "base_score": 75,
-                "adjusted_score": 75,
-                "decision": "APPROVE"
-            })
+        from unittest.mock import patch
+        with patch("app.database.database._get_supabase", return_value=None):
+            for i in range(150):
+                save_appraisal({
+                    "company_id": f"CMP_PERF_{i}",
+                    "company_name": f"Performance Test Corp {i}",
+                    "base_score": 75,
+                    "adjusted_score": 75,
+                    "decision": "APPROVE"
+                })
 
         cursor.execute(query_sql)
         rep_planner_rows = cursor.fetchall()
