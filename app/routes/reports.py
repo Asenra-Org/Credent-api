@@ -4,9 +4,10 @@
 # Copyright (c) 2026 Asenra. All rights reserved.
 # Unauthorized use, reproduction, or distribution is strictly prohibited.
 # =============================================================================
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, Header, Depends
 from pydantic import BaseModel, ValidationError, Field
 from typing import Dict, Any
+from datetime import datetime, timezone
 from fastapi import Depends
 from app.security.dependencies import require_role, get_current_tenant, get_current_user_and_session
 from app.security.audit_service import create_audit_event
@@ -27,7 +28,7 @@ except Exception as init_err:
 try:
     from app.database.database import save_appraisal
     from supabase import create_client, Client
-    
+
     url: str = os.environ.get("SUPABASE_URL", "")
     key: str = os.environ.get("SUPABASE_KEY", "")
     supabase: Client = create_client(url, key)
@@ -112,7 +113,6 @@ async def update_loan_status(
         raise HTTPException(status_code=500, detail="Failed to update application status across database backends.")
     finally:
         conn.close()
-        
     status_map = {
         "APPROVE": "APPROVED",
         "REJECT": "REJECTED",
@@ -133,6 +133,53 @@ async def update_loan_status(
             pass
             
     return {"status": "success", "message": f"Loan {update.decision} (Status: {final_status}) updated successfully."}
+
+@router.post("/approve/{case_id}", dependencies=[Depends(require_role(["Credit Manager", "Admin"]))])
+async def manager_approve_case(
+    case_id: str,
+    update: StatusUpdate,
+    background_tasks: BackgroundTasks,
+    user_ctx: dict = Depends(get_current_user_and_session)
+):
+    """[ASE-63] Resumes a PAUSED pipeline with an authenticated manager override."""
+    manager_identity = user_ctx["user_id"]
+
+    from app.database.database import get_case, update_case_result
+
+    # Check if case exists and is PAUSED
+    case = get_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found.")
+
+    if case.get("status") != "PAUSED":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only PAUSED cases can be approved. Current status: {case.get('status')}"
+        )
+
+    # Inject manager decision and audit data into result_data
+    result_data = case.get("result_data", {})
+    if result_data is None:
+        result_data = {}
+    result_data["manager_decision"] = update.decision
+    result_data["manager_rationale"] = update.rationale
+    result_data["reviewed_by"] = manager_identity
+    result_data["reviewed_at"] = datetime.now(timezone.utc).isoformat()
+
+    # We update result_data but keep status as PAUSED, resume_appraisal_job flips it to RUNNING
+    update_case_result(case_id, result_data, status="PAUSED")
+
+    from app.services.appraisal_worker import resume_appraisal_job
+
+    # Wrap coroutine so BackgroundTasks can run it correctly.
+    background_tasks.add_task(resume_appraisal_job, case_id)
+
+    return {
+        "status": "success",
+        "message": f"Case {case_id} override registered. Pipeline resumed.",
+        "decision": update.decision,
+        "reviewed_by": manager_identity
+    }
 
 @router.post("/generate-cam", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin"]))])
 async def generate_credit_appraisal_memo(
@@ -165,10 +212,10 @@ async def generate_credit_appraisal_memo(
             request.web_research,
             score
         )
-        
+
         # Ensure critical fields exist
         results.setdefault("decision", "APPROVE" if score >= 60 else "REJECT")
-        
+
         # Save to Cloud for Institutional Access
         if save_appraisal:
             try:
@@ -198,7 +245,7 @@ async def generate_credit_appraisal_memo(
                 print(f"[WARN] Failed to save appraisal to Cloud: {save_err}")
 
         return {"status": "success", "cam_report": results}
-        
+
     except Exception as e:
         print(f"[ROUTE /generate-cam] Unexpected error: {e}")
         try:

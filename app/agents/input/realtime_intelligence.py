@@ -7,7 +7,7 @@
 import os
 import json
 import re
-from langchain_groq import ChatGroq
+from app.core.llm import ChatGroqWithFallback as ChatGroq
 from duckduckgo_search import DDGS
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field

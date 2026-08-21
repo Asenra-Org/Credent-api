@@ -383,6 +383,27 @@ class TestForensicsPenaltyRouteIntegration:
         """
         return b"%PDF-1.4 1 0 obj<</Type/Catalog>>endobj\nstartxref\n0\n%%EOF"
 
+    import pytest
+    @pytest.fixture(autouse=True)
+    def mock_downstream_agents(self, monkeypatch):
+        """Mock downstream agents to prevent HITL pauses during integration tests."""
+        from unittest.mock import AsyncMock
+
+        # Mock ManagementQualityAgent
+        mock_mqa = AsyncMock()
+        mock_mqa.analyze.return_value = {"management_score": 90, "requires_manual_review": False}
+        monkeypatch.setattr("app.agents.orchestration.coordinator.ManagementQualityAgent", lambda: mock_mqa)
+
+        # Mock SectorContextAgent
+        mock_sca = AsyncMock()
+        mock_sca.get_sector_outlook.return_value = {"risk_factors": [], "sector": "Manufacturing"}
+        monkeypatch.setattr("app.agents.orchestration.coordinator.SectorContextAgent", lambda: mock_sca)
+
+        # Mock IntegrityVerificationAgent
+        mock_iva = AsyncMock()
+        mock_iva.cross_validate.return_value = {"status": "success", "flags": []}
+        monkeypatch.setattr("app.agents.orchestration.coordinator.IntegrityVerificationAgent", lambda: mock_iva)
+
     def test_suspicious_document_reduces_base_score_by_15(self, client, admin_headers, tmp_path, monkeypatch):
         """
         End-to-end: when run_pdf_forensics returns is_suspicious=True and
