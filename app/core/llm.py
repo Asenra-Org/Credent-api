@@ -1,23 +1,23 @@
-﻿import os
-from langchain_groq import ChatGroq as _ChatGroq
+import os
+from langchain_openai import ChatOpenAI
 
 class ChatGroqWithFallback:
     def __new__(cls, *args, **kwargs):
-        # Always use the environment variables to dynamically route models
-        primary_model = os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b")
-        fallback_model_1 = os.getenv("FALLBACK_LLM_MODEL_1", "qwen/qwen3.6-27b")
-        fallback_model_2 = os.getenv("FALLBACK_LLM_MODEL_2", "openai/gpt-oss-120b")
+        sarvam_api_key = os.getenv("SARVAM_API_KEY")
+        if not sarvam_api_key:
+            from langchain_groq import ChatGroq
+            return ChatGroq(*args, **kwargs)
 
-        # Override the hardcoded model with the dynamic one
-        if "model" in kwargs:
-            kwargs["model"] = primary_model
-
-        primary_llm = _ChatGroq(*args, **kwargs)
-
-        kwargs["model"] = fallback_model_1
-        fallback_llm_1 = _ChatGroq(*args, **kwargs)
-
-        kwargs["model"] = fallback_model_2
-        fallback_llm_2 = _ChatGroq(*args, **kwargs)
-
-        return primary_llm.with_fallbacks([fallback_llm_1, fallback_llm_2])
+        kwargs.pop("api_key", None)
+        
+        primary_model = "sarvam-105b"
+            
+        return ChatOpenAI(
+            base_url="https://api.sarvam.ai/v1",
+            api_key=sarvam_api_key,
+            model=primary_model,
+            temperature=kwargs.get("temperature", 0.1),
+            max_tokens=kwargs.get("max_tokens", None),
+            timeout=None,
+            max_retries=0
+        )

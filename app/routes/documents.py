@@ -267,6 +267,11 @@ async def ingest_pdf_document(
             appraisal_result["filename"] = safe_filename
             appraisal_result["tables_found"] = ingestion_data.get("tables_count", 0)
             appraisal_result["ai_analysis"] = ingestion_data
+            # [DEGRADED-FLAG] Surface extraction failure at the top level so the UI
+            # can warn the underwriter instead of rendering placeholder values as
+            # if they were a real appraisal.
+            appraisal_result["extraction_degraded"] = ingestion_data.get("extraction_degraded", False)
+            appraisal_result["degradation_reason"] = ingestion_data.get("degradation_reason")
             appraisal_result["security_warnings"] = security_warnings
 
             # 3. Save appraisal results to Supabase (Primary) and SQLite (Fallback)

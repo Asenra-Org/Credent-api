@@ -30,8 +30,8 @@ class ManagementQualityAgent:
             logger.warning("GROQ_API_KEY not set. Falling back to dummy key.")
 
         self.llm = ChatGroq(
-            model="llama-3.1-8b-instant",
-            temperature=0,
+            model=os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b"),
+            temperature=0, max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
             api_key=api_key or "dummy",
             model_kwargs={"response_format": {"type": "json_object"}}
         )
@@ -290,3 +290,5 @@ class ManagementQualityAgent:
                 warnings.append(warning)
 
         return promoter_history
+
+

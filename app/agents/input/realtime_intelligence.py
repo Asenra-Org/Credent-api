@@ -33,8 +33,8 @@ class RealtimeIntelligenceAgent:
             print("[WARN] GROQ_API_KEY not set. Research agent will use defaults.")
         
         self.llm = ChatGroq(
-            model="llama-3.1-8b-instant",
-            temperature=0.2, 
+            model=os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b"),
+            temperature=0.2, max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")), 
             api_key=api_key or "dummy"
         )
         try:
@@ -46,11 +46,17 @@ class RealtimeIntelligenceAgent:
         self.search = True
 
     def _extract_json_from_text(self, text: str) -> dict:
-        """Try to extract JSON from raw LLM text response."""
+        from json_repair import repair_json
+        import json
+        import re
         json_match = re.search(r'\{[\s\S]*\}', text)
         if json_match:
-            return json.loads(json_match.group())
-        raise ValueError("No JSON found in response")
+            try: return json.loads(json_match.group())
+            except: 
+                try: return json.loads(repair_json(json_match.group()))
+                except: pass
+        try: return json.loads(repair_json(text))
+        except: raise ValueError("No JSON found in response")
 
     async def conduct_research(self, company_name: str, sector: str) -> dict:
         """Crawl the web for company news and sector headwinds with full error handling."""
@@ -139,3 +145,4 @@ class RealtimeIntelligenceAgent:
         # Attempt 3: Return defaults
         print("[RESEARCH] All research methods failed. Returning defaults.")
         return DEFAULT_RESEARCH.copy()
+

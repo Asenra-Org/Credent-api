@@ -24,10 +24,10 @@ from app.agents.orchestration.case_state import LoanCaseState, PIPELINE_STEPS, S
 logger = logging.getLogger(__name__)
 
 # Timeout threshold for downstream asynchronous agent executions
-AGENT_TIMEOUT_SECONDS = 15.0
+AGENT_TIMEOUT_SECONDS = 120.0
 
 # Timeout threshold for explanation generation
-EXPLANATION_TIMEOUT_SECONDS = 10.0
+EXPLANATION_TIMEOUT_SECONDS = 60.0
 
 # Safe Default Policy Configuration (Fallback)
 DEFAULT_POLICY = {
@@ -99,8 +99,8 @@ class AgentCoordinator:
         # Initialize LLM for narrative explanation generation
         api_key = os.getenv("GROQ_API_KEY")
         self.llm = ChatGroq(
-            model="llama-3.1-8b-instant",
-            temperature=0.2,
+            model=os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b"),
+            temperature=0.2, max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
             api_key=api_key or "dummy",
         )
 
@@ -682,21 +682,10 @@ class AgentCoordinator:
                     if has_critical_evidence and not requires_manual_review:
                         pause_reason = "CRITICAL_RISK_DETECTED"
 
-                    logger.warning(f"[ASE-63] Critical risk detected ({pause_reason}). Pausing pipeline for HITL review.")
-
-                    # Store pause reason in the state so it persists in the snapshot
-                    state.pause_reason = pause_reason
-                    # Persist the snapshot along with the updated status
-                    update_case_result(state.case_id, state.to_snapshot(), status="PAUSED")
-                    logger.info("[ASE-63] Case %s PAUSED for manual review: %s", state.case_id, state.pause_reason)
-
-                    # Return immediately to halt execution.
-                    return {
-                        "status": "paused",
-                        "case_id": state.case_id,
-                        "pause_reason": pause_reason,
-                        "message": f"Pipeline paused for HITL review. {pause_reason}"
-                    }
+                    logger.warning(f"[ASE-63] Critical risk detected ({pause_reason}). Forcing MANUAL REVIEW override.")
+                    
+                    forced_decision = "MANUAL REVIEW"
+                    forced_rationale = f"Pipeline flagged for HITL review. {pause_reason}" 
 
             try:
                 ingestion_citations = extracted_financials.get("citations", {})
@@ -1171,3 +1160,5 @@ class AgentCoordinator:
             "confidence": "CALCULATED",
             "note": "This metric was calculated by the system, not extracted from the document."
         }
+
+

@@ -25,8 +25,8 @@ class RiskIntelligenceAgent:
             print("[WARN] GROQ_API_KEY not set. Risk agent will use passthrough defaults.")
         
         self.llm = ChatGroq(
-            model="llama-3.1-8b-instant",
-            temperature=0,
+            model=os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b"),
+            temperature=0, max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
             api_key=api_key or "dummy"
         )
         try:
@@ -36,11 +36,17 @@ class RiskIntelligenceAgent:
             self.structured_llm = None
 
     def _extract_json_from_text(self, text: str) -> dict:
-        """Try to extract JSON from raw LLM text response."""
+        from json_repair import repair_json
+        import json
+        import re
         json_match = re.search(r'\{[\s\S]*\}', text)
         if json_match:
-            return json.loads(json_match.group())
-        raise ValueError("No JSON found in response")
+            try: return json.loads(json_match.group())
+            except: 
+                try: return json.loads(repair_json(json_match.group()))
+                except: pass
+        try: return json.loads(repair_json(text))
+        except: raise ValueError("No JSON found in response")
 
     async def adjust_risk_with_insights(self, base_score: int, qualitative_notes: str) -> dict:
         """Adjust the quantitative risk score using qualitative human insights."""
@@ -117,3 +123,4 @@ class RiskIntelligenceAgent:
             "adjustment_rationale": "AI analysis unavailable. Score returned unchanged. Manual review recommended.",
             "critical_flags": []
         }
+

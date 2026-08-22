@@ -81,8 +81,8 @@ class FinancialHealthAgent:
         if api_key:
             try:
                 self.llm = ChatGroq(
-                    model="llama-3.1-8b-instant",
-                    temperature=0,
+                    model=os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b"),
+                    temperature=0, max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
                     api_key=api_key,
                 )
 
@@ -157,14 +157,17 @@ class FinancialHealthAgent:
         return "High"
 
     def _extract_json_from_text(self, text: str) -> dict:
-        """Extract JSON object from raw LLM response."""
-
-        match = re.search(r"\{[\s\S]*\}", text)
-
-        if not match:
-            raise ValueError("No JSON found in response")
-
-        return json.loads(match.group())
+        from json_repair import repair_json
+        import json
+        import re
+        json_match = re.search(r'\{[\s\S]*\}', text)
+        if json_match:
+            try: return json.loads(json_match.group())
+            except: 
+                try: return json.loads(repair_json(json_match.group()))
+                except: pass
+        try: return json.loads(repair_json(text))
+        except: raise ValueError("No JSON found in response")
 
     # =========================================================================
     # Financial Ratio Calculations
@@ -805,3 +808,4 @@ Return null when unavailable.
             "recommendation": recommendation,
             "analysis_notes": analysis_notes,
         }
+

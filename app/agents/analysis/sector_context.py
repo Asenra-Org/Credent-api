@@ -74,8 +74,8 @@ class SectorContextAgent:
             print("[WARN] GROQ_API_KEY not set. Sector agent will use passthrough defaults.")
 
         self.llm = ChatGroq(
-            model="llama-3.1-8b-instant",
-            temperature=0,
+            model=os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b"),
+            temperature=0, max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
             api_key=api_key or "dummy",
         )
 
@@ -157,11 +157,17 @@ class SectorContextAgent:
 
     @staticmethod
     def _extract_json_from_text(text: str) -> dict:
-        """Best-effort extraction of a JSON object from raw LLM text output."""
-        json_match = re.search(r"\{[\s\S]*\}", text)
-        if not json_match:
-            raise ValueError("No JSON found in response")
-        return json.loads(json_match.group())
+        from json_repair import repair_json
+        import json
+        import re
+        json_match = re.search(r'\{[\s\S]*\}', text)
+        if json_match:
+            try: return json.loads(json_match.group())
+            except: 
+                try: return json.loads(repair_json(json_match.group()))
+                except: pass
+        try: return json.loads(repair_json(text))
+        except: raise ValueError("No JSON found in response")
 
     @staticmethod
     def _risk_level_from_score(score: int) -> str:
@@ -395,3 +401,4 @@ class SectorContextAgent:
             default=DEFAULT_RBI_POLICIES,
             log_prefix="[SECTOR]",
         )
+

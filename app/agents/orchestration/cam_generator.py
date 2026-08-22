@@ -1,8 +1,7 @@
 # =============================================================================
-# CREDENT — CAM Generator Agent (Credit Appraisal Memo & Decisioning)
+# CREDENT - Institutional CAM Generator Agent
 # A product of Asenra | https://asenra.in
 # Copyright (c) 2026 Asenra. All rights reserved.
-# Unauthorized use, reproduction, or distribution is strictly prohibited.
 # =============================================================================
 import os
 import json
@@ -10,74 +9,206 @@ import re
 from app.core.llm import ChatGroqWithFallback as ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 
 class Citation(BaseModel):
-    id: int = Field(description="Unique integer ID for the citation, matching the bracketed inline marker (e.g. [1]).")
-    snippet: Optional[str] = Field(default=None, description="Exact excerpt from the provided text.")
-    page: Optional[int] = Field(default=None, description="Page number where the snippet was found, if available.")
-    document: Optional[str] = Field(default=None, description="Document type inferred from text")
+    id: int = Field(description="Unique integer ID for the citation")
+    snippet: Optional[str] = Field(default=None, description="Exact excerpt")
+    page: Optional[int] = Field(default=None, description="Page number")
+    document: Optional[str] = Field(default=None, description="Document type")
     location: Optional[str] = Field(default=None, description="Exact field label")
 
-class MetricWithCitation(BaseModel):
-    text: str = Field(description="The analytical text containing inline citation markers like [1].")
-    citations: List[Citation] = Field(default_factory=list, description="List of citations backing up the analysis")
+# ---------------------------------------------------------
+# NEW INSTITUTIONAL CAM SCHEMA
+# ---------------------------------------------------------
 
-# 1. Define the Five Cs Structure
+class DocumentControl(BaseModel):
+    borrower_name: str = Field(default="NOT PROVIDED")
+    case_id: str = Field(default="CRESEM-XXXX")
+    appraisal_date: str = Field(default="NOT PROVIDED")
+    status: str = Field(default="PENDING")
+    version: str = Field(default="v1.0")
+
+class ExecutiveSummary(BaseModel):
+    industry: str = Field(default="NOT PROVIDED")
+    facility_requested: str = Field(default="NOT PROVIDED")
+    revenue: str = Field(default="NOT PROVIDED")
+    ebitda: str = Field(default="NOT PROVIDED")
+    pat: str = Field(default="NOT PROVIDED")
+    net_worth: str = Field(default="NOT PROVIDED")
+    total_debt: str = Field(default="NOT PROVIDED")
+    dscr: str = Field(default="NOT COMPUTABLE")
+    current_ratio: str = Field(default="NOT COMPUTABLE")
+    strengths: List[str] = Field(default_factory=list)
+    key_concerns: List[str] = Field(default_factory=list)
+    critical_conditions: List[str] = Field(default_factory=list)
+
+class BorrowerProfile(BaseModel):
+    legal_name: str = Field(default="NOT PROVIDED")
+    incorporation_date: str = Field(default="NOT PROVIDED")
+    registered_location: str = Field(default="NOT PROVIDED")
+    business_activity: str = Field(default="NOT PROVIDED")
+    years_in_operation: str = Field(default="NOT PROVIDED")
+    existing_lenders: str = Field(default="NOT PROVIDED")
+
+class Facility(BaseModel):
+    facility_type: str = Field(default="NOT PROVIDED")
+    requested_amount: str = Field(default="NOT PROVIDED")
+    tenor: str = Field(default="NOT PROVIDED")
+    repayment_structure: str = Field(default="NOT PROVIDED")
+    security: str = Field(default="NOT PROVIDED")
+
+class Management(BaseModel):
+    promoter_background: str = Field(default="NOT PROVIDED")
+    management_capability: str = Field(default="NOT PROVIDED")
+    governance_indicators: str = Field(default="NOT PROVIDED")
+    related_party_concerns: str = Field(default="NOT PROVIDED")
+
+class Business(BaseModel):
+    business_model: str = Field(default="NOT PROVIDED")
+    revenue_drivers: str = Field(default="NOT PROVIDED")
+    competitive_position: str = Field(default="NOT PROVIDED")
+    industry_characteristics: str = Field(default="NOT PROVIDED")
+
+class FinancialMetric(BaseModel):
+    metric: str
+    value: str
+    trend: str = Field(default="N/A")
+
+class FinancialAnalysis(BaseModel):
+    performance: List[FinancialMetric] = Field(default_factory=list)
+    balance_sheet: List[FinancialMetric] = Field(default_factory=list)
+    cash_flow: List[FinancialMetric] = Field(default_factory=list)
+
+class Ratio(BaseModel):
+    name: str
+    value: str
+    interpretation: str
+    source: str = Field(default="Derived")
+
+class Ratios(BaseModel):
+    key_ratios: List[Ratio] = Field(default_factory=list)
+
+class CrossDocVerification(BaseModel):
+    metric: str
+    source_a: str
+    source_b: str
+    consistency: str = Field(description="MATCH or VARIANCE")
+    observation: str
+
+class BankingAnalysis(BaseModel):
+    average_credits: str = Field(default="NOT PROVIDED")
+    average_debits: str = Field(default="NOT PROVIDED")
+    emi_servicing: str = Field(default="NOT PROVIDED")
+    cheque_returns: str = Field(default="NOT PROVIDED")
+    analytical_notes: str = Field(default="NOT PROVIDED")
+
+class TaxAnalysis(BaseModel):
+    gst_turnover: str = Field(default="NOT PROVIDED")
+    itr_revenue: str = Field(default="NOT PROVIDED")
+    filing_consistency: str = Field(default="NOT PROVIDED")
+
+class Collateral(BaseModel):
+    security_type: str = Field(default="NOT PROVIDED")
+    valuation: str = Field(default="NOT PROVIDED")
+    ltv: str = Field(default="NOT PROVIDED")
+
+class FiveCItem(BaseModel):
+    evidence: str = Field(default="NOT PROVIDED")
+    assessment: str = Field(default="NOT PROVIDED")
+    risk_implication: str = Field(default="NOT PROVIDED")
+
 class FiveCs(BaseModel):
-    character: MetricWithCitation = Field(description="Analysis of management integrity, litigation history, and market reputation.")
-    capacity: MetricWithCitation = Field(description="Analysis of repayment capacity, cash flows, and GST vs Bank consistency.")
-    capital: MetricWithCitation = Field(description="Analysis of net worth and existing financial commitments.")
-    collateral: MetricWithCitation = Field(description="Analysis of available security (note if unsecured).")
-    conditions: MetricWithCitation = Field(description="Analysis of macroeconomic factors and sector headwinds.")
+    character: FiveCItem = Field(default_factory=lambda: FiveCItem())
+    capacity: FiveCItem = Field(default_factory=lambda: FiveCItem())
+    capital: FiveCItem = Field(default_factory=lambda: FiveCItem())
+    collateral: FiveCItem = Field(default_factory=lambda: FiveCItem())
+    conditions: FiveCItem = Field(default_factory=lambda: FiveCItem())
 
-# 2. Define the Final CAM Structure
-class CreditAppraisalMemo(BaseModel):
-    five_cs: FiveCs
-    decision: str = Field(description="'APPROVE', 'MANUAL REVIEW', or 'REJECT'")
-    recommended_loan_amount: str = Field(description="Suggested loan amount (e.g., 'INR 50,00,000') or '0' if rejected. MUST BE PRESENT.")
-    recommended_interest_rate: str = Field(description="Suggested interest rate (e.g., '14.5%') or 'N/A' if rejected. MUST BE PRESENT.")
-    decision_rationale: str = Field(description="Transparent explanation of why this decision was made. Must explicitly reference data points.")
+class RiskItem(BaseModel):
+    area: str
+    level: str = Field(description="HIGH, MEDIUM, LOW")
+    evidence: str
+    mitigation: str
+
+class RiskAssessment(BaseModel):
+    risks: List[RiskItem] = Field(default_factory=list)
+
+class Indicator(BaseModel):
+    finding: str
+    evidence: str
+    severity: str
+    implication: str
+
+class InformationGap(BaseModel):
+    requirement: str
+    reason: str
+    priority: str = Field(description="HIGH, MEDIUM, LOW")
+
+class Recommendation(BaseModel):
+    decision: str = Field(description="APPROVE, APPROVE WITH CONDITIONS, MANUAL REVIEW, REJECT, REWORK")
+    rationale: str
+    conditions: List[str] = Field(default_factory=list)
+
+class EvidenceItem(BaseModel):
+    finding: str
+    value: str
+    source_document: str
+    page: str
+    status: str = Field(description="VERIFIED, UNVERIFIED, MISSING, CONFLICTING, DERIVED")
+
+class CAMDocument(BaseModel):
+    document_control: DocumentControl = Field(default_factory=lambda: DocumentControl())
+    executive_summary: ExecutiveSummary = Field(default_factory=lambda: ExecutiveSummary())
+    borrower_profile: BorrowerProfile = Field(default_factory=lambda: BorrowerProfile())
+    facility: Facility = Field(default_factory=lambda: Facility())
+    management: Management = Field(default_factory=lambda: Management())
+    business: Business = Field(default_factory=lambda: Business())
+    financial_analysis: FinancialAnalysis = Field(default_factory=lambda: FinancialAnalysis())
+    ratios: Ratios = Field(default_factory=lambda: Ratios())
+    cross_document_verification: List[CrossDocVerification] = Field(default_factory=list)
+    banking_analysis: BankingAnalysis = Field(default_factory=lambda: BankingAnalysis())
+    tax_analysis: TaxAnalysis = Field(default_factory=lambda: TaxAnalysis())
+    collateral: Collateral = Field(default_factory=lambda: Collateral())
+    five_cs: FiveCs = Field(default_factory=lambda: FiveCs())
+    risk_assessment: RiskAssessment = Field(default_factory=lambda: RiskAssessment())
+    positive_indicators: List[Indicator] = Field(default_factory=list)
+    red_flags: List[Indicator] = Field(default_factory=list)
+    information_gaps: List[InformationGap] = Field(default_factory=list)
+    recommendation: Recommendation = Field(default_factory=lambda: Recommendation(decision="MANUAL REVIEW", rationale=""))
+    evidence_register: List[EvidenceItem] = Field(default_factory=list)
 
 class CAMGeneratorAgent:
     def __init__(self):
+        # We use llama-3.1-8b-instant, which is fast but has strict output length.
+        # However, it should handle 2-3k tokens of JSON well if prompted correctly.
         self.llm = ChatGroq(
-            model="llama-3.1-8b-instant",
+            model=os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b"),
             temperature=0.1, 
+            max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
             api_key=os.getenv("GROQ_API_KEY")
         )
         try:
-            self.structured_llm = self.llm.with_structured_output(CreditAppraisalMemo, method="json_mode")
+            self.structured_llm = self.llm.with_structured_output(CAMDocument, method="json_mode")
         except:
             self.structured_llm = None
 
     def _build_prompt(self):
+        schema_json = json.dumps(CAMDocument.model_json_schema(), indent=2).replace("{", "{{").replace("}", "}}")
         return ChatPromptTemplate.from_messages([
-            ("system", """You are the Senior Chief Credit Officer. 
-            Synthesize appraisal data into a final Credit Appraisal Memo (CAM).
+            ("system", f"""You are the Senior Chief Credit Officer at an institutional bank.
+            Your task is to synthesize the provided evidence into a PROFESSIONAL, BANKING-GRADE Credit Appraisal Memorandum (CAM).
             
-            Decision Priority (Highest to Lowest):
-            1. If Score < 60 -> MUST REJECT. No exceptions.
-            2. Else if financials are missing -> MANUAL REVIEW.
-            3. Else if Current Ratio < 1.0 -> MANUAL REVIEW.
-            4. Else evaluate the remaining Five Cs criteria to determine APPROVE or MANUAL REVIEW in accordance with the credit policy.
+            CRITICAL DIRECTIVES:
+            1. DO NOT INVENT DATA. If a value is missing, use "NOT PROVIDED", "NOT COMPUTABLE", or "MISSING".
+            2. DISTINGUISH FACT FROM INTERPRETATION. State facts strictly based on the extracted PDF data, then separately state your credit interpretation.
+            3. EVIDENCE TRACEABILITY: Add 1 or 2 items to the evidence_register to prove key numbers. ALL VALUES MUST BE STRINGS WITH QUOTES (e.g. "1.2", "Page 2"). DO NOT output raw integers or floats.
+            4. If the Composite Risk Score < 60, the decision MUST be REJECT.
+            5. If there are severe missing gaps, decision MUST be MANUAL REVIEW or REWORK.
             
-            CRITICAL INSTRUCTION: You MUST output a JSON object containing ALL of the following keys.
-            Also, when citing metrics, you MUST reuse the exact citation details (document, page, location, snippet) provided in the 'Source Citations' data. Do NOT invent new page numbers or document names.
-            
-            {{
-                "five_cs": {{
-                    "character": {{"text": "analysis with [1]...", "citations": [{{"id": 1, "snippet": "...", "page": 1, "document": "...", "location": "..."}}]}},
-                    "capacity": {{"text": "analysis...", "citations": []}},
-                    "capital": {{"text": "analysis...", "citations": []}},
-                    "collateral": {{"text": "analysis...", "citations": []}},
-                    "conditions": {{"text": "analysis...", "citations": []}}
-                }},
-                "decision": "APPROVE, MANUAL REVIEW, or REJECT",
-                "recommended_loan_amount": "Amount or 'Withheld pending review'",
-                "recommended_interest_rate": "Rate or 'TBD'",
-                "decision_rationale": "Detailed explanation"
-            }}"""),
+            Ensure the output strictly adheres to this EXACT JSON schema without generating any trailing commas or malformed curly braces:
+            {schema_json}
+            """),
             ("user", """
             === APPRAISAL DATA ===
             1. PDF Extraction: {pdf_data}
@@ -85,20 +216,26 @@ class CAMGeneratorAgent:
             3. Web Research: {research_data}
             4. Composite Risk Score: {score}
             5. Source Citations: {citations}
+            
+            Synthesize the data into the CAMDocument schema.
             """)
         ])
 
     def _extract_json_from_text(self, text: str) -> dict:
+        from json_repair import repair_json
         json_match = re.search(r'\{[\s\S]*\}', text)
         if json_match:
             try: return json.loads(json_match.group())
-            except: pass
-        raise ValueError("No JSON found")
+            except: 
+                try: return json.loads(repair_json(json_match.group()))
+                except: pass
+        try: return json.loads(repair_json(text))
+        except: raise ValueError("No JSON found")
 
     async def generate_cam(self, extracted_pdf_data: dict, integrity_flags: dict, web_research: dict, final_score: int, ingestion_citations: dict = None) -> dict:
         prompt = self._build_prompt()
         invoke_params = {
-            "pdf_data": json.dumps(extracted_pdf_data),
+            "pdf_data": json.dumps(extracted_pdf_data)[:3000], # Trucate to prevent massive context overflow breaking small models
             "integrity_data": json.dumps(integrity_flags),
             "research_data": json.dumps(web_research),
             "score": final_score,
@@ -109,17 +246,51 @@ class CAMGeneratorAgent:
             if self.structured_llm:
                 chain = prompt | self.structured_llm
                 result = await chain.ainvoke(invoke_params)
-                return result.model_dump()
+                
+                # result is a CAMDocument Pydantic model
+                data = result.model_dump()
+                
+                # To maintain compatibility with existing route assumptions:
+                data["decision"] = data["recommendation"]["decision"]
+                data["recommended_loan_amount"] = data["facility"]["requested_amount"]
+                data["recommended_interest_rate"] = "TBD"
+                data["decision_rationale"] = data["recommendation"]["rationale"]
+                return data
             else:
                 chain = prompt | self.llm
                 res = await chain.ainvoke(invoke_params)
-                return self._extract_json_from_text(res.content)
+                print(f"========== SARVAM RAW RESPONSE ==========\n{res.content}\nMetadata: {res.response_metadata}\n========================================")
+                data = self._extract_json_from_text(res.content)
+                data["decision"] = data.get("recommendation", {}).get("decision", "MANUAL REVIEW")
+                data["recommended_loan_amount"] = data.get("facility", {}).get("requested_amount", "NOT PROVIDED")
+                data["recommended_interest_rate"] = "TBD"
+                data["decision_rationale"] = data.get("recommendation", {}).get("rationale", "N/A")
+                return data
         except Exception as e:
             print(f"[CAM ERROR] {e}")
             return {
-                "five_cs": {k: {"text": "Manual review required due to system error.", "citations": []} for k in ["character", "capacity", "capital", "collateral", "conditions"]},
+                "document_control": {"borrower_name": extracted_pdf_data.get("company_name", "Unknown"), "status": "ERROR"},
+                "executive_summary": {"industry": "UNKNOWN", "revenue": "N/A", "ebitda": "N/A", "pat": "N/A", "strengths": [], "key_concerns": ["SYSTEM ERROR"], "critical_conditions": []},
+                "borrower_profile": {"legal_name": extracted_pdf_data.get("company_name", "Unknown"), "business_activity": "N/A"},
+                "facility": {"facility_type": "N/A", "requested_amount": "N/A", "tenor": "N/A", "security": "N/A"},
+                "management": {"key_personnel": [], "experience": "N/A"},
+                "business": {"model": "N/A", "market": "N/A"},
+                "financial_analysis": {"performance": [], "balance_sheet": [], "cash_flow": []},
+                "ratios": {"key_ratios": []},
+                "cross_document_verification": [],
+                "banking_analysis": {},
+                "tax_analysis": {},
+                "collateral": {},
+                "five_cs": {"character": "N/A", "capacity": "N/A", "capital": "N/A", "collateral": "N/A", "conditions": "N/A"},
+                "risk_assessment": {},
+                "positive_indicators": [],
+                "red_flags": [],
+                "information_gaps": [],
+                "recommendation": {"decision": "MANUAL REVIEW", "rationale": "System error during CAM generation."},
+                "evidence_register": [],
                 "decision": "MANUAL REVIEW",
                 "recommended_loan_amount": "Withheld",
                 "recommended_interest_rate": "TBD",
-                "decision_rationale": f"System encountered an error during synthesis. Score remains {final_score}/100. Escalating for human validation."
+                "decision_rationale": f"System encountered an error during synthesis. Escalate for human validation."
             }
+
