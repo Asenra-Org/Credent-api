@@ -1,5 +1,4 @@
 import os
-from langchain_openai import ChatOpenAI
 
 class ChatGroqWithFallback:
     def __new__(cls, *args, **kwargs):
@@ -7,6 +6,11 @@ class ChatGroqWithFallback:
         if not sarvam_api_key:
             from langchain_groq import ChatGroq
             return ChatGroq(*args, **kwargs)
+
+        # Imported lazily: langchain_openai is only needed for the optional
+        # Sarvam path and is NOT a declared dependency in requirements.txt.
+        # A module-level import crashes Groq-only deployments on startup.
+        from langchain_openai import ChatOpenAI
 
         kwargs.pop("api_key", None)
         
