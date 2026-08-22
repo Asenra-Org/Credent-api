@@ -38,7 +38,7 @@ class AdjustScoreRequest(BaseModel):
     qualitative_notes: str = ""
 
 
-@router.post("/web-research", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin", "Auditor"]))])
+@router.post("/web-research", dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN", "VIEWER"]))])
 async def run_secondary_research(raw_request: Request):
     """Run a live web search for company news and sector headwinds."""
     try:
@@ -79,7 +79,7 @@ async def run_secondary_research(raw_request: Request):
         )
 
 
-@router.post("/adjust-score", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin"]))])
+@router.post("/adjust-score", dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN"]))])
 async def apply_qualitative_insights(raw_request: Request):
     """Adjust a credit score based on a human credit officer's field notes."""
     try:

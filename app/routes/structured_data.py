@@ -48,7 +48,7 @@ class BankStatementRequest(BaseModel):
     )
 
 
-@router.post("/gst", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin", "Auditor"]))])
+@router.post("/gst", dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN", "VIEWER"]))])
 async def fetch_gst(request_data: GstRequest):
     """Retrieve structured GST filing data for a given GSTIN."""
     try:
@@ -75,7 +75,7 @@ async def fetch_gst(request_data: GstRequest):
         )
 
 
-@router.post("/itr", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin", "Auditor"]))])
+@router.post("/itr", dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN", "VIEWER"]))])
 async def fetch_itr(request_data: ItrRequest):
     """Retrieve structured Income Tax Return data for a given PAN."""
     try:
@@ -102,7 +102,7 @@ async def fetch_itr(request_data: ItrRequest):
         )
 
 
-@router.post("/bank-statement", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin", "Auditor"]))])
+@router.post("/bank-statement", dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN", "VIEWER"]))])
 async def fetch_bank_statement(request_data: BankStatementRequest):
     """Retrieve structured bank statement data for a given Account ID."""
     try:

@@ -120,7 +120,7 @@ class SectorContextResponse(BaseModel):
 
 # --- Endpoint Handlers ---
 
-@router.post("/integrity-check", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin", "Auditor"]))])
+@router.post("/integrity-check", dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN", "VIEWER"]))])
 async def check_data_integrity(raw_request: Request):
     """Cross-validate GST returns against Bank Statements to detect fraud."""
     try:
@@ -160,7 +160,7 @@ async def check_data_integrity(raw_request: Request):
         )
 
 
-@router.get("/financial-health", response_model=FinancialHealthResponse, dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin", "Auditor"]))])
+@router.get("/financial-health", response_model=FinancialHealthResponse, dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN", "VIEWER"]))])
 async def get_financial_health(company_name: str = "Asenra Corp"):
     """Evaluate financial health, cash flows, and balance sheet metrics for a company."""
     if financial_agent is None:
@@ -197,7 +197,7 @@ async def get_financial_health(company_name: str = "Asenra Corp"):
     )
 
 
-@router.get("/management-quality", response_model=ManagementQualityResponse, dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin", "Auditor"]))])
+@router.get("/management-quality", response_model=ManagementQualityResponse, dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN", "VIEWER"]))])
 async def get_management_quality(company_name: str = "Asenra Corp"):
     """Assess promoter profiles, corporate governance, and management track record."""
     if management_agent is None:
@@ -220,7 +220,7 @@ async def get_management_quality(company_name: str = "Asenra Corp"):
     )
 
 
-@router.get("/sector-context", response_model=SectorContextResponse, dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin", "Auditor"]))])
+@router.get("/sector-context", response_model=SectorContextResponse, dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN", "VIEWER"]))])
 async def get_sector_context(sector: str = "Manufacturing"):
     """Analyze sector-level macroeconomic factors and RBI regulatory context.
 
@@ -295,7 +295,7 @@ def _map_to_db_payload(appraisal_id: str, request: AppraisalRequest, appraisal_d
     }
 
 
-@router.post("/appraise", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin"]))])
+@router.post("/appraise", dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN"]))])
 async def check_credit_appraisal(
     request: AppraisalRequest,
     tenant_id: str = Depends(get_current_tenant),

@@ -27,7 +27,7 @@ def cleanup_db():
     conn.close()
     client.cookies.clear()
 
-def create_user_and_get_token(email=None, password="password123", role="Admin", tenant_id=None):
+def create_user_and_get_token(email=None, password="password123", role="ORG_ADMIN", tenant_id=None):
     if not email:
         email = f"test_{uuid.uuid4()}@example.com"
     if not tenant_id:
@@ -52,7 +52,7 @@ def test_anonymous_access_denied():
     assert client.put("/api/v1/admin/policies", json={"auto_approve_cutoff": 80.0, "auto_reject_cutoff": 30.0}).status_code in [401, 403]
 
 def test_get_default_policy():
-    token, _ = create_user_and_get_token(role="Credit Analyst")
+    token, _ = create_user_and_get_token(role="CREDIT_ANALYST")
     response = client.get("/api/v1/policies/DEFAULT", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 200
     data = response.json()
@@ -61,14 +61,14 @@ def test_get_default_policy():
     assert "auto_approve_cutoff" in data
 
 def test_get_admin_default_policy():
-    token, _ = create_user_and_get_token(role="Auditor")
+    token, _ = create_user_and_get_token(role="VIEWER")
     response = client.get("/api/v1/admin/policies", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 200
     data = response.json()
     assert data["institution_id"] == "DEFAULT"
 
 def test_update_and_get_custom_policy():
-    token, tenant_id = create_user_and_get_token(role="Admin", tenant_id="INST_TEST_01")
+    token, tenant_id = create_user_and_get_token(role="ORG_ADMIN", tenant_id="INST_TEST_01")
     policy_payload = {
         "current_ratio_safe": 1.5,
         "current_ratio_min": 1.1,
@@ -94,7 +94,7 @@ def test_update_and_get_custom_policy():
     assert data["auto_approve_cutoff"] == 75.0
 
 def test_update_admin_policy():
-    token, tenant_id = create_user_and_get_token(role="Admin", tenant_id="DEFAULT")
+    token, tenant_id = create_user_and_get_token(role="ORG_ADMIN", tenant_id="DEFAULT")
     policy_payload = {
         "current_ratio_safe": 1.6,
         "auto_approve_cutoff": 80.0,
@@ -110,7 +110,7 @@ def test_update_admin_policy():
     assert data["auto_approve_cutoff"] == 80.0
 
 def test_invalid_policy_cutoffs():
-    token, tenant_id = create_user_and_get_token(role="Admin", tenant_id="INST_INVALID")
+    token, tenant_id = create_user_and_get_token(role="ORG_ADMIN", tenant_id="INST_INVALID")
     invalid_payload = {
         "auto_approve_cutoff": 40.0,
         "auto_reject_cutoff": 60.0

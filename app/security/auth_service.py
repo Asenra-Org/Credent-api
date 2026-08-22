@@ -213,11 +213,14 @@ def bootstrap_system(provided_token: str, initial_password: str) -> dict:
             VALUES (?, ?, ?)
         """, (user_id, "admin@credent.local", password_hash))
         
+        # Create Organization
+        cursor.execute("INSERT INTO organizations (id, name) VALUES (?, ?)", (tenant_id, "CRESEM Platform"))
+
         # Create First Tenant Membership
         cursor.execute("""
             INSERT INTO tenant_memberships (user_id, tenant_id, role)
             VALUES (?, ?, ?)
-        """, (user_id, tenant_id, "SuperAdmin"))
+        """, (user_id, tenant_id, "SUPER_ADMIN"))
         
         # Set bootstrapped to true
         cursor.execute("UPDATE system_state SET is_bootstrapped = 1 WHERE id = 1")

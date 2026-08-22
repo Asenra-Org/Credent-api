@@ -46,8 +46,8 @@ def test_tenant_membership_creation():
     cursor.execute("INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)", (user_id, "member@example.com", "hash"))
     
     # Can belong to multiple tenants
-    cursor.execute("INSERT INTO tenant_memberships (user_id, tenant_id, role) VALUES (?, ?, ?)", (user_id, "tenant1", "Admin"))
-    cursor.execute("INSERT INTO tenant_memberships (user_id, tenant_id, role) VALUES (?, ?, ?)", (user_id, "tenant2", "Credit Analyst"))
+    cursor.execute("INSERT INTO tenant_memberships (user_id, tenant_id, role) VALUES (?, ?, ?)", (user_id, "tenant1", "ORG_ADMIN"))
+    cursor.execute("INSERT INTO tenant_memberships (user_id, tenant_id, role) VALUES (?, ?, ?)", (user_id, "tenant2", "CREDIT_ANALYST"))
     
     # Cannot have duplicate membership for same tenant
     with pytest.raises(sqlite3.IntegrityError):

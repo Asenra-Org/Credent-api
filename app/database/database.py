@@ -166,6 +166,28 @@ def init_db():
     )''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email COLLATE NOCASE)')
 
+    cursor.execute('''CREATE TABLE IF NOT EXISTS organizations (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        is_active INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+    )''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS invitations (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL,
+        organization_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        token_hash TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at TEXT,
+        created_by TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        FOREIGN KEY (organization_id) REFERENCES organizations(id),
+        FOREIGN KEY (created_by) REFERENCES users(id)
+    )''')
+
     cursor.execute('''CREATE TABLE IF NOT EXISTS tenant_memberships (
         user_id TEXT NOT NULL,
         tenant_id TEXT NOT NULL,

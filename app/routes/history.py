@@ -12,7 +12,7 @@ router = APIRouter()
 from fastapi import Depends
 from app.security.dependencies import require_role, get_current_tenant
 
-@router.get("/recent", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin", "Auditor"]))])
+@router.get("/recent", dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN", "VIEWER"]))])
 async def fetch_recent_appraisals(limit: int = 10, tenant_id: str = Depends(get_current_tenant)):
     try:
         appraisals = get_recent_appraisals(limit, tenant_id=tenant_id)

@@ -90,7 +90,7 @@ def _get_admin_token(client):
     c.execute("INSERT INTO users (id, email, password_hash, mfa_enabled, is_active, is_locked, failed_login_count) VALUES (?, ?, ?, 0, 1, 0, 0)",
               (user_id, email, hash_password(password)))
     c.execute("INSERT INTO tenant_memberships (user_id, tenant_id, role, is_active) VALUES (?, ?, ?, 1)",
-              (user_id, "DEFAULT", "Admin"))
+              (user_id, "DEFAULT", "ORG_ADMIN"))
     conn.commit()
     conn.close()
 

@@ -75,7 +75,7 @@ def _default_cam(score: int) -> dict:
 
 from app.database.database import save_appraisal
 
-@router.patch("/update-status/{appraisal_id}", dependencies=[Depends(require_role(["Credit Manager", "Admin"]))])
+@router.patch("/update-status/{appraisal_id}", dependencies=[Depends(require_role(["UNDERWRITING_MANAGER", "ORG_ADMIN"]))])
 async def update_loan_status(
     appraisal_id: str,
     update: StatusUpdate,
@@ -144,7 +144,7 @@ async def update_loan_status(
 
     return {"status": "success", "message": f"Loan {update.decision} (Status: {final_status}) updated successfully."}
 
-@router.post("/approve/{case_id}", dependencies=[Depends(require_role(["Credit Manager", "Admin"]))])
+@router.post("/approve/{case_id}", dependencies=[Depends(require_role(["UNDERWRITING_MANAGER", "ORG_ADMIN"]))])
 async def manager_approve_case(
     case_id: str,
     update: StatusUpdate,
@@ -191,7 +191,7 @@ async def manager_approve_case(
         "reviewed_by": manager_identity
     }
 
-@router.post("/generate-cam", dependencies=[Depends(require_role(["Credit Analyst", "Credit Manager", "Admin"]))])
+@router.post("/generate-cam", dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN"]))])
 async def generate_credit_appraisal_memo(
     raw_request: Request,
     tenant_id: str = Depends(get_current_tenant)

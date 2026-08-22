@@ -36,7 +36,7 @@ def create_test_user(email="test@example.com", password="password123", is_active
     c.execute("INSERT INTO users (id, email, password_hash, is_active, is_locked) VALUES (?, ?, ?, ?, ?)", 
               (user_id, email, hash_password(password), is_active, is_locked))
     c.execute("INSERT INTO tenant_memberships (user_id, tenant_id, role) VALUES (?, ?, ?)",
-              (user_id, tenant_id, "Admin"))
+              (user_id, tenant_id, "ORG_ADMIN"))
     conn.commit()
     conn.close()
     return user_id, tenant_id

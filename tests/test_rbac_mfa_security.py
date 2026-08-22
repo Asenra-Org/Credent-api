@@ -30,7 +30,7 @@ def cleanup_db():
     conn.commit()
     conn.close()
 
-def create_user_with_role(email="test@example.com", password="password123", role="Admin", mfa_enabled=False):
+def create_user_with_role(email="test@example.com", password="password123", role="ORG_ADMIN", mfa_enabled=False):
     conn = get_sqlite_connection()
     c = conn.cursor()
     user_id = str(uuid.uuid4())
@@ -57,54 +57,54 @@ def get_auth_token(email="test@example.com", password="password123"):
 
 # --- RBAC ---
 def test_1_admin_can_access_admin_protected_route():
-    _, tenant_id, _ = create_user_with_role("admin@example.com", "pass", "Admin")
+    _, tenant_id, _ = create_user_with_role("admin@example.com", "pass", "ORG_ADMIN")
     token = get_auth_token("admin@example.com", "pass")
     res = client.put(f"/api/v1/admin/policies/{tenant_id}", json={"auto_approve_cutoff": 70.0, "auto_reject_cutoff": 30.0}, headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 200
 
 def test_2_credit_manager_cannot_access_admin_route():
-    _, tenant_id, _ = create_user_with_role("mgr@example.com", "pass", "Credit Manager")
+    _, tenant_id, _ = create_user_with_role("mgr@example.com", "pass", "UNDERWRITING_MANAGER")
     token = get_auth_token("mgr@example.com", "pass")
     res = client.put(f"/api/v1/admin/policies/{tenant_id}", json={"auto_approve_cutoff": 70.0, "auto_reject_cutoff": 30.0}, headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 403
 
 def test_3_credit_analyst_cannot_access_manager_operation():
-    _, tenant_id, _ = create_user_with_role("ana@example.com", "pass", "Credit Analyst")
+    _, tenant_id, _ = create_user_with_role("ana@example.com", "pass", "CREDIT_ANALYST")
     token = get_auth_token("ana@example.com", "pass")
     res = client.put(f"/api/v1/admin/policies/{tenant_id}", json={"auto_approve_cutoff": 70.0, "auto_reject_cutoff": 30.0}, headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 403
 
 def test_4_auditor_cannot_mutate_protected_resources():
-    _, tenant_id, _ = create_user_with_role("aud@example.com", "pass", "Auditor")
+    _, tenant_id, _ = create_user_with_role("aud@example.com", "pass", "VIEWER")
     token = get_auth_token("aud@example.com", "pass")
     res = client.put(f"/api/v1/admin/policies/{tenant_id}", json={"auto_approve_cutoff": 70.0, "auto_reject_cutoff": 30.0}, headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 403
 
 def test_5_auditor_can_access_permitted_read_operation():
-    _, tenant_id, _ = create_user_with_role("aud@example.com", "pass", "Auditor")
+    _, tenant_id, _ = create_user_with_role("aud@example.com", "pass", "VIEWER")
     token = get_auth_token("aud@example.com", "pass")
     res = client.get(f"/api/v1/admin/policies/{tenant_id}", headers={"Authorization": f"Bearer {token}"})
     assert res.status_code in [200, 404] # Authorized, but might not exist
 
 def test_6_missing_authentication_returns_401():
-    _, tenant_id, _ = create_user_with_role("aud@example.com", "pass", "Auditor")
+    _, tenant_id, _ = create_user_with_role("aud@example.com", "pass", "VIEWER")
     res = client.get(f"/api/v1/admin/policies/{tenant_id}")
     assert res.status_code in [401, 403]
 
 def test_7_authenticated_unauthorized_role_returns_403():
-    _, tenant_id, _ = create_user_with_role("user@example.com", "pass", "Auditor")
+    _, tenant_id, _ = create_user_with_role("user@example.com", "pass", "VIEWER")
     token = get_auth_token("user@example.com", "pass")
     res = client.put(f"/api/v1/admin/policies/{tenant_id}", json={"auto_approve_cutoff": 70.0, "auto_reject_cutoff": 30.0}, headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 403
 
 def test_8_client_supplied_role_is_ignored():
-    _, tenant_id, _ = create_user_with_role("user@example.com", "pass", "Auditor")
+    _, tenant_id, _ = create_user_with_role("user@example.com", "pass", "VIEWER")
     token = get_auth_token("user@example.com", "pass")
-    res = client.put(f"/api/v1/admin/policies/{tenant_id}", json={"auto_approve_cutoff": 70.0, "auto_reject_cutoff": 30.0}, headers={"Authorization": f"Bearer {token}", "X-Role": "Admin"})
+    res = client.put(f"/api/v1/admin/policies/{tenant_id}", json={"auto_approve_cutoff": 70.0, "auto_reject_cutoff": 30.0}, headers={"Authorization": f"Bearer {token}", "X-Role": "ORG_ADMIN"})
     assert res.status_code == 403
 
 def test_9_changed_db_role_takes_effect():
-    user_id, tenant_id, _ = create_user_with_role("user@example.com", "pass", "Admin")
+    user_id, tenant_id, _ = create_user_with_role("user@example.com", "pass", "ORG_ADMIN")
     token = get_auth_token("user@example.com", "pass")
     
     conn = get_sqlite_connection()
@@ -117,7 +117,7 @@ def test_9_changed_db_role_takes_effect():
     assert res.status_code == 403
 
 def test_10_inactive_membership_is_rejected():
-    user_id, tenant_id, _ = create_user_with_role("user@example.com", "pass", "Admin")
+    user_id, tenant_id, _ = create_user_with_role("user@example.com", "pass", "ORG_ADMIN")
     token = get_auth_token("user@example.com", "pass")
     
     conn = get_sqlite_connection()
@@ -131,32 +131,32 @@ def test_10_inactive_membership_is_rejected():
 
 # --- TENANT ISOLATION ---
 def test_11_user_cannot_access_another_tenant():
-    _, tenant_id, _ = create_user_with_role("user@example.com", "pass", "Admin")
+    _, tenant_id, _ = create_user_with_role("user@example.com", "pass", "ORG_ADMIN")
     token = get_auth_token("user@example.com", "pass")
     
     res = client.put(f"/api/v1/admin/policies/some-other-tenant", json={"auto_approve_cutoff": 70.0, "auto_reject_cutoff": 30.0}, headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 403
 
 def test_12_client_supplied_tenant_id_cannot_override_jwt_context():
-    _, tenant_id, _ = create_user_with_role("user@example.com", "pass", "Admin")
+    _, tenant_id, _ = create_user_with_role("user@example.com", "pass", "ORG_ADMIN")
     token = get_auth_token("user@example.com", "pass")
     res = client.put(f"/api/v1/admin/policies/some-other-tenant", json={"auto_approve_cutoff": 70.0, "auto_reject_cutoff": 30.0}, headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 403
 
 def test_13_institution_id_mismatch_fails_closed():
-    _, tenant_id, _ = create_user_with_role("user@example.com", "pass", "Admin")
+    _, tenant_id, _ = create_user_with_role("user@example.com", "pass", "ORG_ADMIN")
     token = get_auth_token("user@example.com", "pass")
     res = client.put(f"/api/v1/admin/policies/some-other-tenant", json={"auto_approve_cutoff": 70.0, "auto_reject_cutoff": 30.0}, headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 403
 
 def test_14_same_uuid_in_another_tenant_does_not_grant_access():
-    user_id, tenant_id, _ = create_user_with_role("user@example.com", "pass", "Admin")
+    user_id, tenant_id, _ = create_user_with_role("user@example.com", "pass", "ORG_ADMIN")
     token = get_auth_token("user@example.com", "pass")
     res = client.put(f"/api/v1/admin/policies/some-other-tenant", json={"auto_approve_cutoff": 70.0, "auto_reject_cutoff": 30.0}, headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 403
 
 def test_15_inactive_tenant_membership_is_rejected():
-    user_id, tenant_id, _ = create_user_with_role("user@example.com", "pass", "Admin")
+    user_id, tenant_id, _ = create_user_with_role("user@example.com", "pass", "ORG_ADMIN")
     token = get_auth_token("user@example.com", "pass")
     
     conn = get_sqlite_connection()
@@ -174,7 +174,7 @@ def test_16_mfa_enrollment_requires_authentication():
     assert res.status_code in [401, 403]
 
 def test_17_totp_secret_is_generated():
-    user_id, tenant_id, _ = create_user_with_role("user@example.com", "pass", "Admin")
+    user_id, tenant_id, _ = create_user_with_role("user@example.com", "pass", "ORG_ADMIN")
     token = get_auth_token("user@example.com", "pass")
     res = client.post("/api/v1/auth/mfa/enroll", headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 200
@@ -182,13 +182,13 @@ def test_17_totp_secret_is_generated():
     assert "secret=" in res.json()["provisioning_uri"]
 
 def test_18_mfa_secret_is_not_returned_in_unsafe_responses():
-    user_id, tenant_id, secret = create_user_with_role("mfa@example.com", "pass", "Admin", mfa_enabled=True)
+    user_id, tenant_id, secret = create_user_with_role("mfa@example.com", "pass", "ORG_ADMIN", mfa_enabled=True)
     res = client.post("/api/v1/auth/login", json={"email": "mfa@example.com", "password": "pass"})
     assert "mfa_required" in res.json()
     assert secret not in str(res.json())
 
 def test_19_valid_totp_activates_mfa():
-    user_id, tenant_id, _ = create_user_with_role("mfa@example.com", "pass", "Admin")
+    user_id, tenant_id, _ = create_user_with_role("mfa@example.com", "pass", "ORG_ADMIN")
     token = get_auth_token("mfa@example.com", "pass")
     client.post("/api/v1/auth/mfa/enroll", headers={"Authorization": f"Bearer {token}"})
     
@@ -205,7 +205,7 @@ def test_19_valid_totp_activates_mfa():
     assert res.status_code == 200
     
 def test_20_invalid_totp_fails():
-    user_id, tenant_id, _ = create_user_with_role("mfa@example.com", "pass", "Admin")
+    user_id, tenant_id, _ = create_user_with_role("mfa@example.com", "pass", "ORG_ADMIN")
     token = get_auth_token("mfa@example.com", "pass")
     client.post("/api/v1/auth/mfa/enroll", headers={"Authorization": f"Bearer {token}"})
     
@@ -213,14 +213,14 @@ def test_20_invalid_totp_fails():
     assert res.status_code == 400
 
 def test_21_mfa_cannot_be_bypassed_by_modifying_request_payload():
-    user_id, tenant_id, secret = create_user_with_role("mfa@example.com", "pass", "Admin", mfa_enabled=True)
+    user_id, tenant_id, secret = create_user_with_role("mfa@example.com", "pass", "ORG_ADMIN", mfa_enabled=True)
     res = client.post("/api/v1/auth/login", json={"email": "mfa@example.com", "password": "pass"})
     assert res.status_code == 200
     assert "access_token" not in res.json()
     assert "mfa_required" in res.json()
 
 def test_22_mfa_verification_is_rate_limited():
-    user_id, tenant_id, secret = create_user_with_role("mfa@example.com", "pass", "Admin", mfa_enabled=True)
+    user_id, tenant_id, secret = create_user_with_role("mfa@example.com", "pass", "ORG_ADMIN", mfa_enabled=True)
     res = client.post("/api/v1/auth/login", json={"email": "mfa@example.com", "password": "pass"})
     c_token = res.json()["challenge_token"]
     
@@ -232,14 +232,14 @@ def test_22_mfa_verification_is_rate_limited():
     assert "Account locked" in res2.json()["detail"]
 
 def test_23_mfa_enabled_login_requires_mfa():
-    user_id, tenant_id, secret = create_user_with_role("mfa@example.com", "pass", "Admin", mfa_enabled=True)
+    user_id, tenant_id, secret = create_user_with_role("mfa@example.com", "pass", "ORG_ADMIN", mfa_enabled=True)
     res = client.post("/api/v1/auth/login", json={"email": "mfa@example.com", "password": "pass"})
     assert res.status_code == 200
     assert "access_token" not in res.json()
     assert res.json().get("mfa_required") is True
 
 def test_24_invalid_mfa_prevents_privileged_authentication():
-    user_id, tenant_id, secret = create_user_with_role("mfa@example.com", "pass", "Admin", mfa_enabled=True)
+    user_id, tenant_id, secret = create_user_with_role("mfa@example.com", "pass", "ORG_ADMIN", mfa_enabled=True)
     res = client.post("/api/v1/auth/login", json={"email": "mfa@example.com", "password": "pass"})
     c_token = res.json()["challenge_token"]
     
@@ -252,7 +252,7 @@ def test_25_mfa_disable_cannot_be_performed_without_security_checks():
     assert res.status_code in [401, 403]
 
 def test_26_mfa_state_changes_invalidate_sessions():
-    user_id, tenant_id, _ = create_user_with_role("mfa@example.com", "pass", "Admin")
+    user_id, tenant_id, _ = create_user_with_role("mfa@example.com", "pass", "ORG_ADMIN")
     token = get_auth_token("mfa@example.com", "pass")
     
     client.post("/api/v1/auth/mfa/enroll", headers={"Authorization": f"Bearer {token}"})
@@ -274,7 +274,7 @@ def test_26_mfa_state_changes_invalidate_sessions():
     conn.close()
 
 def test_27_revoked_session_cannot_authorize_protected_operation():
-    user_id, tenant_id, _ = create_user_with_role("user@example.com", "pass", "Admin")
+    user_id, tenant_id, _ = create_user_with_role("user@example.com", "pass", "ORG_ADMIN")
     token = get_auth_token("user@example.com", "pass")
     
     conn = get_sqlite_connection()

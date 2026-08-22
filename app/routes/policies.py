@@ -66,7 +66,7 @@ async def update_institution_policy(
     request: PolicyRequest,
     institution_id: str = "DEFAULT",
     tenant_id: str = Depends(get_current_tenant),
-    role: str = Depends(require_role(["Admin", "SuperAdmin"])),
+    role: str = Depends(require_role(["ORG_ADMIN", "SUPER_ADMIN"])),
     user_context: dict = Depends(get_current_user_and_session)
 ):
     """Create or update risk policy configuration for an institution or default admin policy."""
