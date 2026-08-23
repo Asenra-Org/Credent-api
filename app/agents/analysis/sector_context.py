@@ -312,8 +312,8 @@ class SectorContextAgent:
         # Get risk factors from local CSV
         local_headwinds = self.get_local_macro_headwinds(sector)
 
-        print(f"[DEBUG] Sector = {sector}")
-        print(f"[DEBUG] Local Headwinds = {local_headwinds}")
+        # [P0-1] Headwind detail derives from borrower documents; log the count only.
+        print(f"[SECTOR] resolved | headwind_count={len(local_headwinds or [])}")
 
 
         if local_headwinds:

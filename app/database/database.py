@@ -15,6 +15,8 @@ import sqlite3
 load_dotenv()
 
 # FORCE SUPABASE AS PRIMARY
+from app.core.db_policy import assert_sqlite_permitted, enforce_database_policy
+
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
@@ -34,6 +36,9 @@ def _get_supabase() -> Client:
         return None
 
 def get_sqlite_connection(timeout: float = 30.0) -> sqlite3.Connection:
+    # [P0-5] SQLite is development/test only. In production this raises rather
+    # than silently writing lending records to ephemeral container storage.
+    assert_sqlite_permitted("get_sqlite_connection")
     """Returns a local SQLite connection configured with WAL mode and busy_timeout for production concurrency."""
     conn = sqlite3.connect(DB_PATH, timeout=timeout)
     conn.execute("PRAGMA journal_mode=WAL;")
@@ -105,6 +110,32 @@ def init_db():
             if "duplicate column name" not in str(e).lower():
                 raise e
 
+    # ------------------------------------------------------------------
+    # [P0-2] Decision provenance columns.
+    # Additive only: existing rows keep NULL, which is the correct reading -
+    # provenance for historical appraisals is genuinely unknown and must never
+    # be backfilled with invented model or prompt versions.
+    # ------------------------------------------------------------------
+    for _col, _type in (
+        ('model_provider', 'TEXT'),
+        ('model_name', 'TEXT'),
+        ('model_version', 'TEXT'),
+        ('prompt_version', 'TEXT'),
+        ('agent_version', 'TEXT'),
+        ('temperature', 'REAL'),
+        ('provider_request_id', 'TEXT'),
+        ('agent_provenance', 'TEXT'),
+        ('analysis_status', 'TEXT'),
+        ('degraded_components', 'TEXT'),
+        ('decision_allowed', 'INTEGER'),
+        ('provenance_recorded_at', 'TIMESTAMP'),
+    ):
+        if _col not in columns:
+            try:
+                cursor.execute(f'ALTER TABLE appraisal_records ADD COLUMN {_col} {_type}')
+            except sqlite3.OperationalError as e:
+                if 'duplicate column name' not in str(e).lower():
+                    raise e
     # [Added] Alter table to include institution_id column if not exists
     if 'institution_id' not in columns:
         try:
@@ -272,6 +303,8 @@ def init_db():
     if sb:
         print("[OK] Supabase integration active.")
     else:
+        # [P0-5] Fail fast in production; warn only outside it.
+        enforce_database_policy(SUPABASE_URL, SUPABASE_KEY)
         print("[WARN] Supabase not configured. Using local SQLite.")
 
 
@@ -459,7 +492,8 @@ def save_appraisal(data):
     if sb:
         try:
             sb.table("loan_applications").insert(payload).execute()
-            print(f"[OK] Saved appraisal to Supabase: {payload['borrower_name']}")
+            # [P0-1] Borrower name is personal data; log the record identifier instead.
+            print(f"[OK] Saved appraisal to Supabase | appraisal_id={record_id}")
         except Exception as e:
             print(f"[ERROR] Supabase Save Error: {e}")
 
@@ -468,7 +502,15 @@ def save_appraisal(data):
         conn = get_sqlite_connection()
         cursor = conn.cursor()
         cursor.execute('INSERT OR REPLACE INTO companies (id, name, sector) VALUES (?, ?, ?)', (data.get("company_id"), data.get("company_name"), data.get("sector")))
-        cursor.execute('''INSERT INTO appraisal_records (id, company_id, revenue, debt, base_score, adjusted_score, decision, recommended_loan_amount, recommended_interest_rate, decision_rationale, raw_document_data, integrity_flags, web_research, cam_report, financial_ratios, management_score, promoter_analysis, governance_assessment, institution_id, override_reason, is_override) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (record_id, data.get("company_id"), data.get("revenue"), data.get("debt"), data.get("base_score"), data.get("adjusted_score"), data.get("decision"), data.get("recommended_loan_amount"), data.get("recommended_interest_rate"), data.get("decision_rationale"), json.dumps(data.get("raw_document_data")), json.dumps(data.get("integrity_flags")), json.dumps(data.get("web_research")), json.dumps(data.get("cam_report")), json.dumps(payload["financial_ratios"]), payload["management_score"], json.dumps(payload["promoter_analysis"]), json.dumps(payload["governance_assessment"]), payload["institution_id"], data.get("override_reason"), 1 if data.get("is_override") else 0))
+        # [P0-2] Provenance is supplied by the caller. Absent values stay None and
+        # persist as SQL NULL - never invented.
+        _prov = data.get("provenance_summary") or {}
+        _agent_prov = data.get("agent_provenance")
+        _agent_prov_json = json.dumps(_agent_prov) if _agent_prov is not None else None
+        _degraded = data.get("degraded_components")
+        _degraded_json = json.dumps(_degraded) if _degraded is not None else None
+        _decision_allowed = None if data.get("decision_allowed") is None else (1 if data.get("decision_allowed") else 0)
+        cursor.execute('''INSERT INTO appraisal_records (id, company_id, revenue, debt, base_score, adjusted_score, decision, recommended_loan_amount, recommended_interest_rate, decision_rationale, raw_document_data, integrity_flags, web_research, cam_report, financial_ratios, management_score, promoter_analysis, governance_assessment, institution_id, override_reason, is_override, model_provider, model_name, model_version, prompt_version, agent_version, temperature, provider_request_id, agent_provenance, analysis_status, degraded_components, decision_allowed, provenance_recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (record_id, data.get("company_id"), data.get("revenue"), data.get("debt"), data.get("base_score"), data.get("adjusted_score"), data.get("decision"), data.get("recommended_loan_amount"), data.get("recommended_interest_rate"), data.get("decision_rationale"), json.dumps(data.get("raw_document_data")), json.dumps(data.get("integrity_flags")), json.dumps(data.get("web_research")), json.dumps(data.get("cam_report")), json.dumps(payload["financial_ratios"]), payload["management_score"], json.dumps(payload["promoter_analysis"]), json.dumps(payload["governance_assessment"]), payload["institution_id"], data.get("override_reason"), 1 if data.get("is_override") else 0, _prov.get("provider"), _prov.get("model_name"), _prov.get("model_version"), _prov.get("prompt_version"), _prov.get("agent_version"), _prov.get("temperature"), _prov.get("provider_request_id"), _agent_prov_json, data.get("analysis_status"), _degraded_json, _decision_allowed, _prov.get("generated_at")))
         conn.commit()
         conn.close()
     except Exception as e:

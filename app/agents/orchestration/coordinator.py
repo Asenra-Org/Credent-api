@@ -20,6 +20,7 @@ from app.agents.analysis.integrity_verification import IntegrityVerificationAgen
 from app.agents.orchestration.cam_generator import CAMGeneratorAgent
 from app.database.database import get_policy, create_case, update_case_step, update_case_result, mark_case_failed, get_case
 from app.agents.orchestration.case_state import LoanCaseState, PIPELINE_STEPS, STATUS_RUNNING, STATUS_COMPLETED, STATUS_FAILED
+from app.core.decision_config import DECISION_PATH_TEMPERATURE
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,7 @@ class AgentCoordinator:
         api_key = os.getenv("GROQ_API_KEY")
         self.llm = ChatGroq(
             model=os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b"),
-            temperature=0.2, max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
+            temperature=DECISION_PATH_TEMPERATURE,  # [P0-3] decision path max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
             api_key=api_key or "dummy",
         )
 

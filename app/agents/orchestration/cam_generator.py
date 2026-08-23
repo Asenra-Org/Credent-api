@@ -10,6 +10,7 @@ from app.core.llm import ChatGroqWithFallback as ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any
+from app.core.decision_config import DECISION_PATH_TEMPERATURE
 
 class Citation(BaseModel):
     id: int = Field(default=0, description="Unique integer ID for the citation")
@@ -184,7 +185,7 @@ class CAMGeneratorAgent:
         # However, it should handle 2-3k tokens of JSON well if prompted correctly.
         self.llm = ChatGroq(
             model=os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b"),
-            temperature=0.1, 
+            temperature=DECISION_PATH_TEMPERATURE,  # [P0-3] decision path 
             max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
             api_key=os.getenv("GROQ_API_KEY")
         )
@@ -271,7 +272,8 @@ class CAMGeneratorAgent:
             else:
                 chain = prompt | self.llm
                 res = await chain.ainvoke(invoke_params)
-                print(f"========== SARVAM RAW RESPONSE ==========\n{res.content}\nMetadata: {res.response_metadata}\n========================================")
+                # [P0-1] The CAM response embeds borrower financials verbatim.
+                print(f"[CAM] LLM response received | chars={len(res.content or [])}")
                 data = self._extract_json_from_text(res.content)
                 data["decision"] = data.get("recommendation", {}).get("decision", "MANUAL REVIEW")
                 data["recommended_loan_amount"] = data.get("facility", {}).get("requested_amount", "NOT PROVIDED")

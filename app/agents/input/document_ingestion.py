@@ -248,7 +248,8 @@ def normalize_to_inr(value):
             result = int(val_num * CRORE)
         else:
             result = int(val_num)
-        print(f"[NORMALIZE] Input: {value} (numeric) | Output: {result}")
+        # [P0-1] Financial figures must not reach logs.
+        print("[NORMALIZE] numeric value normalised")
         return result
 
     # -----------------------------------------------------------------------
@@ -290,7 +291,8 @@ def normalize_to_inr(value):
         # Ambiguous numbers remain as-is to prevent 10x/100x explosions
         normalized = int(number)
 
-    print(f"[NORMALIZE] Input: {value} | Number: {number} | Output: {normalized}")
+    # [P0-1] Financial figures must not reach logs.
+    print("[NORMALIZE] string value normalised")
     return normalized
 
 # UPGRADED SCHEMA: Focus on hard financials to prevent "Tone-based" hallucinations
@@ -1311,7 +1313,9 @@ class DocumentIngestionAgent:
             chain = prompt | self.llm
             raw_result = await chain.ainvoke({"text": truncated_text})
             raw_response = raw_result.content if hasattr(raw_result, 'content') else str(raw_result)
-            print(f'========== SARVAM RAW INGESTION RESPONSE ==========\n{raw_response}\n========================================')
+            # [P0-1] The raw response carries the borrower's full financial payload.
+            # Log only that a response was received, never its contents.
+            print(f"[PARSE] LLM response received | chars={len(raw_response)}")
             parsed = self._extract_json_from_text(raw_response)
 
             # Fill defaults for any missing keys
