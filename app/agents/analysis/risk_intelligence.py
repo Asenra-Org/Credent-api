@@ -121,6 +121,13 @@ class RiskIntelligenceAgent:
             "original_score": base_score,
             "adjusted_score": base_score,
             "adjustment_rationale": "AI analysis unavailable. Score returned unchanged. Manual review recommended.",
+            # [P1-5] Structured failure marker. The score below is the UNCHANGED input,
+            # not an assessment, so the boundary validator must be able to tell that no
+            # risk analysis actually happened rather than treating it as a real result.
+            "agent_status": "DEGRADED",
+            "error_code": "MODEL_UNAVAILABLE",
+            "risk_analysis_degraded": True,
+            "retryable": True,
             "critical_flags": []
         }
 

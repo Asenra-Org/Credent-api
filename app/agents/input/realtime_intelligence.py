@@ -35,7 +35,9 @@ class RealtimeIntelligenceAgent:
         
         self.llm = ChatGroq(
             model=os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b"),
-            temperature=DECISION_PATH_TEMPERATURE,  # [P0-3] decision path max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")), 
+            # [P0-3] Decision path: greedy decoding.
+            temperature=DECISION_PATH_TEMPERATURE,
+            max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
             api_key=api_key or "dummy"
         )
         try:
@@ -65,7 +67,15 @@ class RealtimeIntelligenceAgent:
         # Validate inputs
         if not company_name or not company_name.strip():
             print("[RESEARCH] No company name provided, returning defaults.")
-            return DEFAULT_RESEARCH.copy()
+            # [P1-5] Structured failure marker so downstream validation can tell
+            # "no adverse findings" apart from "research never ran".
+            degraded = DEFAULT_RESEARCH.copy()
+            degraded["agent_status"] = "DEGRADED"
+            degraded["error_code"] = "INVALID_OUTPUT"
+            degraded["research_degraded"] = True
+            degraded["degradation_reason"] = "No company name supplied for research."
+            degraded["retryable"] = True
+            return degraded
         
         if not sector or not sector.strip():
             sector = "General Business"
@@ -145,5 +155,13 @@ class RealtimeIntelligenceAgent:
 
         # Attempt 3: Return defaults
         print("[RESEARCH] All research methods failed. Returning defaults.")
-        return DEFAULT_RESEARCH.copy()
+        # [P1-5] Structured failure marker so downstream validation can tell
+        # "no adverse findings" apart from "research never ran".
+        degraded = DEFAULT_RESEARCH.copy()
+        degraded["agent_status"] = "DEGRADED"
+        degraded["error_code"] = "EXTERNAL_RESEARCH_UNAVAILABLE"
+        degraded["research_degraded"] = True
+        degraded["degradation_reason"] = "External research unavailable."
+        degraded["retryable"] = True
+        return degraded
 

@@ -21,6 +21,7 @@ from app.security.auth_service import (
 )
 from app.database.database import get_sqlite_connection
 from app.security.dependencies import get_current_user_and_session
+from app.security.rate_limit_dependency import rate_limit
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -48,7 +49,7 @@ def bootstrap(req: BootstrapRequest, request: Request):
     result = bootstrap_system(token, req.initial_password)
     return {"message": "System bootstrapped successfully", "data": result}
 
-@router.post("/login")
+@router.post("/login", dependencies=[Depends(rate_limit("auth"))])
 def login(req: LoginRequest, request: Request, response: Response):
     conn = get_sqlite_connection()
     try:
@@ -107,7 +108,7 @@ def login(req: LoginRequest, request: Request, response: Response):
     finally:
         conn.close()
 
-@router.post("/mfa/verify-login")
+@router.post("/mfa/verify-login", dependencies=[Depends(rate_limit("auth"))])
 def mfa_verify_login(req: MFALoginRequest, request: Request, response: Response):
     payload = verify_mfa_challenge_token(req.challenge_token)
     user_id = payload["sub"]

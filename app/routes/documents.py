@@ -179,8 +179,9 @@ from app.database.database import save_appraisal, get_case
 
 from app.security.dependencies import require_role, get_current_tenant
 from fastapi import Depends
+from app.security.rate_limit_dependency import rate_limit
 
-@router.post("/ingest/pdf", dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN"]))])
+@router.post("/ingest/pdf", dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN"])), Depends(rate_limit("expensive_ai"))])
 async def ingest_pdf_document(
     file: UploadFile = File(...), 
     institution_id: str = "DEFAULT", 
@@ -331,7 +332,7 @@ async def ingest_pdf_document(
         except Exception:
             pass
 
-@router.get("/ingest/status/{case_id}", dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN", "VIEWER"]))])
+@router.get("/ingest/status/{case_id}", dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN", "VIEWER"])), Depends(rate_limit("read"))])
 async def get_case_status(case_id: str, tenant_id: str = Depends(get_current_tenant)):
     """Fetch the real-time processing status of a credit appraisal case."""
     db_record = get_case(case_id, tenant_id=tenant_id)
@@ -353,7 +354,7 @@ async def get_case_status(case_id: str, tenant_id: str = Depends(get_current_ten
 # ASE-52: Batch Ingestion Endpoint — Async Queue + Supabase Storage
 # =============================================================================
 
-@router.post("/ingest/batch", dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN"]))])
+@router.post("/ingest/batch", dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN"])), Depends(rate_limit("expensive_ai"))])
 async def ingest_batch_documents(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),

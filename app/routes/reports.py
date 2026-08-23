@@ -74,8 +74,9 @@ def _default_cam(score: int) -> dict:
     }
 
 from app.database.database import save_appraisal
+from app.security.rate_limit_dependency import rate_limit
 
-@router.patch("/update-status/{appraisal_id}", dependencies=[Depends(require_role(["UNDERWRITING_MANAGER", "ORG_ADMIN"]))])
+@router.patch("/update-status/{appraisal_id}", dependencies=[Depends(require_role(["UNDERWRITING_MANAGER", "ORG_ADMIN"])), Depends(rate_limit("write"))])
 async def update_loan_status(
     appraisal_id: str,
     update: StatusUpdate,
@@ -191,7 +192,7 @@ async def manager_approve_case(
         "reviewed_by": manager_identity
     }
 
-@router.post("/generate-cam", dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN"]))])
+@router.post("/generate-cam", dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN"])), Depends(rate_limit("expensive_ai"))])
 async def generate_credit_appraisal_memo(
     raw_request: Request,
     tenant_id: str = Depends(get_current_tenant)

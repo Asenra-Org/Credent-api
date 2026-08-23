@@ -74,3 +74,17 @@ uploads/
 # Internal AI Memory
 .ai/
 
+# [P1-2] Local database artifacts. `*.db` already matched credent.db, but the
+# file was committed before that rule existed, so git kept tracking it and a
+# 3 MB binary carrying test users and appraisal rows shipped with every clone.
+# It is untracked now; init_db() recreates the schema on first run.
+app/database/*.db
+app/database/*.sqlite
+app/database/*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+
+# [P1-2] Uploaded borrower documents and local document store must never be committed.
+temp_uploads/
+document_store/

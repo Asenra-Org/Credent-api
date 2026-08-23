@@ -102,7 +102,9 @@ class AgentCoordinator:
         api_key = os.getenv("GROQ_API_KEY")
         self.llm = ChatGroq(
             model=os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b"),
-            temperature=DECISION_PATH_TEMPERATURE,  # [P0-3] decision path max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
+            # [P0-3] Decision path: greedy decoding.
+            temperature=DECISION_PATH_TEMPERATURE,
+            max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
             api_key=api_key or "dummy",
         )
 

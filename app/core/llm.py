@@ -30,6 +30,22 @@ from langchain_groq import ChatGroq
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _MOVE_ON_STATUS = {413}
 
+# Transport-level failures carry no HTTP status at all: a socket timeout or a
+# refused connection never reaches the point where the provider can answer.
+# These are the most obviously transient failures there are, so they must be
+# retried on type rather than on status.
+_RETRYABLE_EXCEPTIONS = (
+    asyncio.TimeoutError,
+    TimeoutError,
+    ConnectionError,
+)
+
+
+def _is_retryable(exc: Exception, status: Optional[int]) -> bool:
+    if status is not None:
+        return status in _RETRYABLE_STATUS
+    return isinstance(exc, _RETRYABLE_EXCEPTIONS)
+
 
 def _status_of(exc: Exception) -> Optional[int]:
     """Best-effort HTTP status extraction across groq/httpx exception shapes."""
@@ -117,7 +133,7 @@ class ResilientChatGroq(ChatGroq):
                     if status in _MOVE_ON_STATUS:
                         print(f"[LLM] {model_name} returned {status} (request too large). Trying next model.")
                         break
-                    if status not in _RETRYABLE_STATUS:
+                    if not _is_retryable(exc, status):
                         raise
                     if attempt + 1 >= self.attempts_per_model:
                         print(f"[LLM] {model_name} exhausted after {attempt + 1} attempts ({status}).")
@@ -151,7 +167,7 @@ class ResilientChatGroq(ChatGroq):
                     if status in _MOVE_ON_STATUS:
                         print(f"[LLM] {model_name} returned {status} (request too large). Trying next model.")
                         break
-                    if status not in _RETRYABLE_STATUS:
+                    if not _is_retryable(exc, status):
                         raise
                     if attempt + 1 >= self.attempts_per_model:
                         break

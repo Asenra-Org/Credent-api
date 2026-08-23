@@ -153,7 +153,7 @@ def validate_research(payload: Optional[Dict[str, Any]]) -> Tuple[AgentStatus, O
             ErrorCode.EXTERNAL_RESEARCH_UNAVAILABLE.value,
             "external research unavailable",
         )
-    if payload.get("research_degraded") is True:
+    if payload.get("research_degraded") is True or payload.get("agent_status") == "DEGRADED":
         return (
             AgentStatus.DEGRADED,
             ErrorCode.EXTERNAL_RESEARCH_UNAVAILABLE.value,
@@ -162,11 +162,38 @@ def validate_research(payload: Optional[Dict[str, Any]]) -> Tuple[AgentStatus, O
     return AgentStatus.SUCCESS, None, None
 
 
+def validate_risk_intelligence(payload):
+    """OPTIONAL agent. [P1-5] Honours the structured marker the agent now sets."""
+    if not payload or not isinstance(payload, dict):
+        return AgentStatus.DEGRADED, ErrorCode.INVALID_OUTPUT.value, "no risk payload"
+    if payload.get("risk_analysis_degraded") is True or payload.get("agent_status") == "DEGRADED":
+        return (AgentStatus.DEGRADED,
+                payload.get("error_code") or ErrorCode.MODEL_UNAVAILABLE.value,
+                "risk analysis did not run; score returned unchanged")
+    score = payload.get("adjusted_score")
+    if score is not None and not (isinstance(score, (int, float)) and 0 <= score <= 100):
+        return AgentStatus.DEGRADED, ErrorCode.INVALID_OUTPUT.value, "adjusted_score out of range"
+    return AgentStatus.SUCCESS, None, None
+
+
+def validate_sector_context(payload):
+    """OPTIONAL agent. [P1-5] Honours the structured marker the agent now sets."""
+    if not payload or not isinstance(payload, dict):
+        return AgentStatus.DEGRADED, ErrorCode.INVALID_OUTPUT.value, "no sector payload"
+    if payload.get("sector_analysis_degraded") is True or payload.get("agent_status") == "DEGRADED":
+        return (AgentStatus.DEGRADED,
+                payload.get("error_code") or ErrorCode.MODEL_UNAVAILABLE.value,
+                "sector analysis unavailable")
+    return AgentStatus.SUCCESS, None, None
+
+
 VALIDATORS = {
     "document_ingestion": validate_ingestion,
     "cam_generator": validate_cam,
     "financial_health": validate_financial_health,
     "realtime_intelligence": validate_research,
+    "risk_intelligence": validate_risk_intelligence,
+    "sector_context": validate_sector_context,
 }
 
 
