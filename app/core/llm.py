@@ -73,7 +73,7 @@ def _backoff_seconds(attempt: int) -> float:
 def _model_chain() -> List[str]:
     """Primary model first, then any configured fallbacks, de-duplicated."""
     chain = [
-        os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b"),
+        os.getenv("PRIMARY_LLM_MODEL", "llama-3.1-8b-instant"),
         os.getenv("FALLBACK_LLM_MODEL_1", ""),
         os.getenv("FALLBACK_LLM_MODEL_2", ""),
     ]
