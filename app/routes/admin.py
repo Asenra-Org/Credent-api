@@ -38,7 +38,7 @@ def get_my_profile(current_user: dict = Depends(get_current_user_and_session)):
     conn = get_auth_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT email, is_active, created_at FROM users WHERE id = ?", (user_id,))
+        cursor.execute("SELECT email, is_active, created_at, mfa_enabled FROM users WHERE id = ?", (user_id,))
         user_row = cursor.fetchone()
         if not user_row:
             raise HTTPException(status_code=404, detail="User not found")
@@ -54,6 +54,7 @@ def get_my_profile(current_user: dict = Depends(get_current_user_and_session)):
             "email": user_row[0],
             "is_active": bool(user_row[1]),
             "created_at": user_row[2],
+            "mfa_enabled": bool(user_row[3]),
             "role": membership[0] if membership else None,
             "organization": {
                 "id": org_row[0] if org_row else tenant_id,
