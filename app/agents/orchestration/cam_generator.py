@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any
 
 class Citation(BaseModel):
-    id: int = Field(description="Unique integer ID for the citation")
+    id: int = Field(default=0, description="Unique integer ID for the citation")
     snippet: Optional[str] = Field(default=None, description="Exact excerpt")
     page: Optional[int] = Field(default=None, description="Page number")
     document: Optional[str] = Field(default=None, description="Document type")
@@ -71,8 +71,8 @@ class Business(BaseModel):
     industry_characteristics: str = Field(default="NOT PROVIDED")
 
 class FinancialMetric(BaseModel):
-    metric: str
-    value: str
+    metric: str = Field(default="NOT PROVIDED")
+    value: str = Field(default="NOT PROVIDED")
     trend: str = Field(default="N/A")
 
 class FinancialAnalysis(BaseModel):
@@ -81,20 +81,20 @@ class FinancialAnalysis(BaseModel):
     cash_flow: List[FinancialMetric] = Field(default_factory=list)
 
 class Ratio(BaseModel):
-    name: str
-    value: str
-    interpretation: str
+    name: str = Field(default="NOT PROVIDED")
+    value: str = Field(default="NOT COMPUTABLE")
+    interpretation: str = Field(default="NOT PROVIDED")
     source: str = Field(default="Derived")
 
 class Ratios(BaseModel):
     key_ratios: List[Ratio] = Field(default_factory=list)
 
 class CrossDocVerification(BaseModel):
-    metric: str
-    source_a: str
-    source_b: str
-    consistency: str = Field(description="MATCH or VARIANCE")
-    observation: str
+    metric: str = Field(default="NOT PROVIDED")
+    source_a: str = Field(default="NOT PROVIDED")
+    source_b: str = Field(default="NOT PROVIDED")
+    consistency: str = Field(default="NOT PROVIDED", description="MATCH or VARIANCE")
+    observation: str = Field(default="NOT PROVIDED")
 
 class BankingAnalysis(BaseModel):
     average_credits: str = Field(default="NOT PROVIDED")
@@ -126,36 +126,36 @@ class FiveCs(BaseModel):
     conditions: FiveCItem = Field(default_factory=lambda: FiveCItem())
 
 class RiskItem(BaseModel):
-    area: str
-    level: str = Field(description="HIGH, MEDIUM, LOW")
-    evidence: str
-    mitigation: str
+    area: str = Field(default="NOT PROVIDED")
+    level: str = Field(default="MEDIUM", description="HIGH, MEDIUM, LOW")
+    evidence: str = Field(default="NOT PROVIDED")
+    mitigation: str = Field(default="NOT PROVIDED")
 
 class RiskAssessment(BaseModel):
     risks: List[RiskItem] = Field(default_factory=list)
 
 class Indicator(BaseModel):
-    finding: str
-    evidence: str
-    severity: str
-    implication: str
+    finding: str = Field(default="NOT PROVIDED")
+    evidence: str = Field(default="NOT PROVIDED")
+    severity: str = Field(default="MEDIUM")
+    implication: str = Field(default="NOT PROVIDED")
 
 class InformationGap(BaseModel):
-    requirement: str
-    reason: str
-    priority: str = Field(description="HIGH, MEDIUM, LOW")
+    requirement: str = Field(default="NOT PROVIDED")
+    reason: str = Field(default="NOT PROVIDED")
+    priority: str = Field(default="MEDIUM", description="HIGH, MEDIUM, LOW")
 
 class Recommendation(BaseModel):
-    decision: str = Field(description="APPROVE, APPROVE WITH CONDITIONS, MANUAL REVIEW, REJECT, REWORK")
-    rationale: str
+    decision: str = Field(default="MANUAL REVIEW", description="APPROVE, APPROVE WITH CONDITIONS, MANUAL REVIEW, REJECT, REWORK")
+    rationale: str = Field(default="NOT PROVIDED")
     conditions: List[str] = Field(default_factory=list)
 
 class EvidenceItem(BaseModel):
-    finding: str
-    value: str
-    source_document: str
-    page: str
-    status: str = Field(description="VERIFIED, UNVERIFIED, MISSING, CONFLICTING, DERIVED")
+    finding: str = Field(default="NOT PROVIDED")
+    value: str = Field(default="NOT PROVIDED")
+    source_document: str = Field(default="NOT PROVIDED")
+    page: str = Field(default="NOT PROVIDED")
+    status: str = Field(default="UNVERIFIED", description="VERIFIED, UNVERIFIED, MISSING, CONFLICTING, DERIVED")
 
 class CAMDocument(BaseModel):
     document_control: DocumentControl = Field(default_factory=lambda: DocumentControl())
@@ -205,6 +205,18 @@ class CAMGeneratorAgent:
             3. EVIDENCE TRACEABILITY: Add 1 or 2 items to the evidence_register to prove key numbers. ALL VALUES MUST BE STRINGS WITH QUOTES (e.g. "1.2", "Page 2"). DO NOT output raw integers or floats.
             4. If the Composite Risk Score < 60, the decision MUST be REJECT.
             5. If there are severe missing gaps, decision MUST be MANUAL REVIEW or REWORK.
+            6. THE FIVE Cs ARE ANALYSIS, NOT EXTRACTION. The five_cs section is your own
+               professional credit judgement derived from the financial data supplied, so
+               directive 1 does not apply to it. You MUST populate all five (character,
+               capacity, capital, collateral, conditions). For each one give:
+                 - evidence: the specific figures you reasoned from
+                 - assessment: your underwriting conclusion in one or two sentences
+                 - risk_implication: what it means for repayment risk
+               Derive capacity from revenue against debt servicing, capital from shareholder
+               equity and gearing, and conditions from the sector and macro context. Do not
+               write "NOT PROVIDED" in five_cs whenever financial figures have been supplied;
+               if collateral is genuinely absent, say so and state the risk of unsecured
+               exposure rather than leaving it blank.
             
             Ensure the output strictly adheres to this EXACT JSON schema without generating any trailing commas or malformed curly braces:
             {schema_json}
