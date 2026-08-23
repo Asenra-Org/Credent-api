@@ -141,7 +141,7 @@ def test_bootstrap_flow():
                       headers={"X-Bootstrap-Token": token},
                       json={"initial_password": "super-strong-password"})
     assert res.status_code == 201
-    assert res.json()["data"]["email"] == "admin@credent.local"
+    assert res.json()["data"]["email"] == "maker@hdfc.com"
     
     # 2nd attempt fails
     res2 = client.post("/api/v1/auth/bootstrap", 
