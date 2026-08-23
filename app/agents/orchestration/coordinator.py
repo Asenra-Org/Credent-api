@@ -21,6 +21,7 @@ from app.agents.orchestration.cam_generator import CAMGeneratorAgent
 from app.database.database import get_policy, create_case, update_case_step, update_case_result, mark_case_failed, get_case
 from app.agents.orchestration.case_state import LoanCaseState, PIPELINE_STEPS, STATUS_RUNNING, STATUS_COMPLETED, STATUS_FAILED
 from app.core.decision_config import DECISION_PATH_TEMPERATURE
+from app.core.execution_state import AnalysisStatus, DECISION_ANALYSIS_INCOMPLETE, classify_exception
 
 logger = logging.getLogger(__name__)
 
@@ -702,12 +703,24 @@ class AgentCoordinator:
                         cam_result["recommended_interest_rate"] = "TBD"
             except Exception as cam_exc:
                 logger.warning("[ASE-54] CAM generation failed: %s", cam_exc)
+                # [P0-4] A CAM generation failure is a system fault, not an
+                # underwriting conclusion. Emitting MANUAL REVIEW here made a
+                # broken pipeline indistinguishable from a credit officer
+                # deciding a case needs human review.
+                _code, _retryable = classify_exception(cam_exc)
                 cam_result = {
-                    "five_cs": {k: "Manual review required due to system error." for k in ["character", "capacity", "capital", "collateral", "conditions"]},
-                    "decision": "MANUAL REVIEW",
-                    "recommended_loan_amount": "Withheld",
-                    "recommended_interest_rate": "TBD",
-                    "decision_rationale": "CAM generation failed. Manual review required."
+                    "document_control": {"status": "ERROR"},
+                    "five_cs": {k: "NOT PROVIDED" for k in ["character", "capacity", "capital", "collateral", "conditions"]},
+                    "decision": DECISION_ANALYSIS_INCOMPLETE,
+                    "decision_allowed": False,
+                    "analysis_status": AnalysisStatus.FAILED.value,
+                    "error_code": _code,
+                    "retryable": _retryable,
+                    "recommended_loan_amount": "UNAVAILABLE",
+                    "recommended_interest_rate": "UNAVAILABLE",
+                    "decision_rationale": (
+                        "Credit recommendation unavailable: the Credit Appraisal Memo could not be generated. This is a system failure, not an underwriting conclusion."
+                    ),
                 }
 
             state.step_complete("cam_complete")

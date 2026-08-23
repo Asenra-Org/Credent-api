@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi.testclient import TestClient
 from app.main import app
 from app.agents.orchestration.coordinator import AgentCoordinator
@@ -13,7 +13,20 @@ client = TestClient(app)
 @patch('app.agents.orchestration.coordinator.CAMGeneratorAgent')
 async def test_coordinator_critical_pause(mock_cam_cls, mock_update_result):
     # Mock boundary: Instantiate coordinator with mocked agents so ChatGroq is not initialized
-    coordinator = AgentCoordinator(cam_agent=mock_cam_cls.return_value)
+    # generate_cam is awaited by the coordinator, so the double must be async.
+    # With a plain MagicMock the call raised, the run fell into the CAM-failure
+    # branch, and this test never exercised the critical-risk override at all.
+    mock_cam = mock_cam_cls.return_value
+    mock_cam.generate_cam = AsyncMock(return_value={
+        "document_control": {"status": "PENDING"},
+        "five_cs": {k: {"evidence": "e", "assessment": "a", "risk_implication": "r"}
+                    for k in ["character", "capacity", "capital", "collateral", "conditions"]},
+        "decision": "APPROVE",
+        "recommended_loan_amount": "1000000",
+        "recommended_interest_rate": "12%",
+        "decision_rationale": "baseline",
+    })
+    coordinator = AgentCoordinator(cam_agent=mock_cam)
     @patch('app.agents.orchestration.coordinator.create_case')
     @patch('app.agents.orchestration.coordinator.get_case')
     async def run_test(mock_get_case, mock_create_case):
@@ -42,16 +55,21 @@ async def test_coordinator_critical_pause(mock_cam_cls, mock_update_result):
             mock_exists.return_value = True
             result = await coordinator.run_appraisal_with_state({"file_path": "dummy.pdf"}, case_id="TEST_CRIT_PAUSE")
 
-        assert result["status"] == "paused"
-        assert result["pause_reason"] == "HUMAN_APPROVAL_REQUIRED"
+        # [ASE-63 revised] The coordinator no longer halts the run on critical
+        # risk; it completes the pipeline and forces the decision to MANUAL
+        # REVIEW so a human underwrites the case. This is a business rule, not
+        # a system failure, so the appraisal legitimately reports success and
+        # still yields a decision - unlike a required-agent failure, which must
+        # produce ANALYSIS_INCOMPLETE (see tests/test_p0_hardening.py).
+        assert result["status"] == "success"
 
-        # ensure execution stops
-        assert "combined_decision" not in result
+        decision = result.get("combined_decision", {})
+        assert decision.get("decision") == "MANUAL REVIEW"
+        assert "HUMAN_APPROVAL_REQUIRED" in decision.get("decision_rationale", "")
+        assert decision.get("recommended_loan_amount") == "Withheld"
 
-        # State persistence
+        # State is still persisted for audit.
         assert mock_update_result.called
-        args, kwargs = mock_update_result.call_args
-        assert kwargs.get("status") == STATUS_PAUSED
 
     await run_test()
 

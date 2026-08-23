@@ -106,7 +106,7 @@ async def run_appraisal_job(
 
             # 5. Persist the appraisal results
             if isinstance(appraisal_result, dict):
-                _persist_appraisal(appraisal_result, case_id, institution_id)
+                _persist_appraisal(appraisal_result, case_id, institution_id, coordinator=coordinator)
 
             # 6. Mark case COMPLETED
             update_case_status(case_id, "COMPLETED", current_step="done")
@@ -185,7 +185,7 @@ async def resume_appraisal_job(case_id: str) -> dict:
             if appraisal_result.get("status") == "paused":
                 logger.info(f"[Worker] Appraisal paused again for case_id={case_id}")
                 return appraisal_result
-            _persist_appraisal(appraisal_result, case_id, "DEFAULT")
+            _persist_appraisal(appraisal_result, case_id, "DEFAULT", coordinator=coordinator)
 
         update_case_status(case_id, "COMPLETED", current_step="done")
         logger.info(f"[Worker] ✓ Resumed appraisal completed for case_id={case_id}")
@@ -197,9 +197,10 @@ async def resume_appraisal_job(case_id: str) -> dict:
 
 
 
-def _persist_appraisal(appraisal_result: dict, case_id: str, institution_id: str) -> None:
+def _persist_appraisal(appraisal_result: dict, case_id: str, institution_id: str, coordinator=None) -> None:
     """Extract relevant fields from the coordinator output and persist to database."""
     from app.database.database import save_appraisal
+    from app.core.appraisal_safety import apply_safety_gate, persistence_fields
 
     try:
         individual = appraisal_result.get("individual_agent_outputs", {})
@@ -211,6 +212,15 @@ def _persist_appraisal(appraisal_result: dict, case_id: str, institution_id: str
         base_score = ingestion_data.get("base_score") or financial_data.get("financial_health_score", 50)
         forensics_penalty = appraisal_result.get("forensics_penalty", {})
         adjusted_score = forensics_penalty.get("adjusted_score", base_score)
+
+        # [P0-4] Identical safety path to the API route: validate every agent,
+        # then refuse to persist a valid credit decision when a REQUIRED
+        # component failed. The record is still written for auditability, but
+        # carries decision_allowed=False and ANALYSIS_INCOMPLETE.
+        _exec_summary, _prov_summary, _ledger = apply_safety_gate(
+            appraisal_result,
+            coordinator=coordinator,
+        )
 
         save_appraisal({
             "company_id": f"COMP_{case_id[:8]}",
@@ -232,7 +242,8 @@ def _persist_appraisal(appraisal_result: dict, case_id: str, institution_id: str
             "management_score": management_data.get("management_score", 0.0),
             "promoter_analysis": management_data.get("promoter_analysis", []),
             "governance_assessment": management_data.get("governance_assessment", {}),
-            "institution_id": institution_id
+            "institution_id": institution_id,
+            **persistence_fields(_exec_summary, _prov_summary, _ledger),
         })
     except Exception as e:
         logger.error(f"[Worker] Persistence error for case_id={case_id}: {e}", exc_info=True)

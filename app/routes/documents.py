@@ -12,9 +12,7 @@ from datetime import datetime
 from typing import List
 from fastapi import APIRouter, UploadFile, File, HTTPException, Form, BackgroundTasks
 from app.agents.input.document_ingestion import DocumentIngestionAgent
-from app.core.execution_state import AgentResult, AppraisalExecution, gate_decision
-from app.core.output_validation import validate as validate_agent_output
-from app.core.provenance import ProvenanceLedger
+from app.core.appraisal_safety import apply_safety_gate, persistence_fields
 from app.agents.security.document_security import DocumentSecurityAgent
 
 router = APIRouter()
@@ -278,60 +276,17 @@ async def ingest_pdf_document(
             appraisal_result["security_warnings"] = security_warnings
 
             # ---------------------------------------------------------------
-            # [P0-4] Fail-closed gating. Validate each agent's output, then
-            # refuse to issue a credit decision when a REQUIRED component did
-            # not produce a usable result. A system failure must surface as
-            # ANALYSIS_INCOMPLETE, never as MANUAL REVIEW, which a credit
-            # officer would read as a genuine underwriting conclusion.
+            # [P0-4] Fail-closed gating and [P0-2] provenance, applied through the
+            # shared safety path so this route and the Celery worker enforce the
+            # identical rules. See app/core/appraisal_safety.py.
             # ---------------------------------------------------------------
-            _outputs = appraisal_result.get("individual_agent_outputs", {}) or {}
-            _execution = AppraisalExecution()
-            _agent_payloads = {
-                "document_ingestion": ingestion_data,
-                "financial_health": financial_data,
-                "cam_generator": appraisal_result.get("combined_decision", {}),
-                "risk_intelligence": _outputs.get("risk_intelligence"),
-                "sector_context": _outputs.get("sector_context"),
-                "management_quality": _outputs.get("management_quality"),
-                "realtime_intelligence": _outputs.get("web_research"),
-            }
-            for _agent_name, _payload in _agent_payloads.items():
-                _status, _code, _reason = validate_agent_output(_agent_name, _payload)
-                _execution.record(AgentResult(
-                    agent=_agent_name, status=_status, error_code=_code, reason=_reason,
-                ))
-            if isinstance(security_warnings, dict) and security_warnings.get("prompt_injection"):
-                _execution.security_blocked = True
-
-            _gate = gate_decision(_execution, appraisal_result.get("combined_decision", {}).get("decision"))
-            _exec_summary = _execution.summary()
-            appraisal_result["analysis_status"] = _exec_summary["analysis_status"]
-            appraisal_result["decision_allowed"] = _exec_summary["decision_allowed"]
-            appraisal_result["degraded_components"] = _exec_summary["degraded_components"]
-            appraisal_result["missing_required"] = _exec_summary["missing_required"]
-            appraisal_result["agent_results"] = _exec_summary["agent_results"]
-
-            if not _exec_summary["decision_allowed"]:
-                # Overwrite the surfaced recommendation so no client can render
-                # an incomplete analysis as a credit conclusion.
-                _cd = appraisal_result.get("combined_decision") or {}
-                _cd.update({
-                    "decision": _gate["decision"],
-                    "recommended_loan_amount": _gate["recommended_loan_amount"],
-                    "recommended_interest_rate": _gate["recommended_interest_rate"],
-                    "decision_rationale": _gate["decision_rationale"],
-                })
-                appraisal_result["combined_decision"] = _cd
-
-            # [P0-2] Provenance for the agents that actually executed.
-            _ledger = ProvenanceLedger()
-            try:
-                _ledger.record_capture("document_ingestion", llm=getattr(agent, "llm", None))
-                _ledger.record_capture("cam_generator", llm=getattr(getattr(coordinator, "cam_agent", None), "llm", None))
-            except Exception:
-                pass
-            _prov_summary = _ledger.summary()
-            appraisal_result["provenance"] = {"summary": _prov_summary, "agents": _ledger.to_list()}
+            _injection = bool(isinstance(security_warnings, dict) and security_warnings.get("prompt_injection"))
+            _exec_summary, _prov_summary, _ledger = apply_safety_gate(
+                appraisal_result,
+                ingestion_agent=agent,
+                coordinator=coordinator,
+                security_blocked=_injection,
+            )
 
             # 3. Save appraisal results to Supabase (Primary) and SQLite (Fallback)
             try:
@@ -356,11 +311,7 @@ async def ingest_pdf_document(
                     "promoter_analysis": appraisal_result.get("individual_agent_outputs", {}).get("management_quality", {}).get("promoter_analysis", []),
                     "governance_assessment": appraisal_result.get("individual_agent_outputs", {}).get("management_quality", {}).get("governance_assessment", {}),
                     "institution_id": institution_id,
-                    "provenance_summary": _prov_summary,
-                    "agent_provenance": _ledger.to_list(),
-                    "analysis_status": _exec_summary["analysis_status"],
-                    "degraded_components": _exec_summary["degraded_components"],
-                    "decision_allowed": _exec_summary["decision_allowed"],
+                    **persistence_fields(_exec_summary, _prov_summary, _ledger),
                 })
             except Exception as save_err:
                 print(f"[ROUTE /ingest/pdf] Persistence error: {save_err}")

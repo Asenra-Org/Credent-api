@@ -1,6 +1,6 @@
 import pytest
 from app.agents.input.document_ingestion import CitationDetail, CitationMetadata, RiskExtraction, DocumentIngestionAgent, CalculatedMetricCitation
-from app.agents.orchestration.cam_generator import Citation as CamCitation, CAMGeneratorAgent, MetricWithCitation, FiveCs, CreditAppraisalMemo
+from app.agents.orchestration.cam_generator import Citation as CamCitation, CAMGeneratorAgent
 from app.agents.orchestration.coordinator import AgentCoordinator
 from unittest.mock import AsyncMock, patch, MagicMock
 

@@ -1,7 +1,29 @@
+"""ASE-40 evidence traceability, migrated to the CAMDocument schema.
+
+Citation traceability is unchanged and still covered. The MetricWithCitation /
+CreditAppraisalMemo models this module previously imported were replaced by the
+institutional CAMDocument schema, so those assertions now target FiveCItem,
+FiveCs and the evidence register.
+
+Fallback expectations changed under P0-4: an LLM failure must not present as
+MANUAL REVIEW. See test_cam_generator.py for the full gating assertions.
+"""
+
 import pytest
 from pydantic import ValidationError
 from unittest.mock import AsyncMock, patch
-from app.agents.orchestration.cam_generator import CAMGeneratorAgent, Citation, MetricWithCitation, FiveCs, CreditAppraisalMemo
+
+from app.agents.orchestration.cam_generator import (
+    CAMDocument,
+    CAMGeneratorAgent,
+    Citation,
+    EvidenceItem,
+    FiveCItem,
+    FiveCs,
+)
+from app.core.execution_state import AgentStatus
+from app.core.output_validation import validate_cam
+
 
 # ---------------------------------------------------------
 # UNIT TESTS: PYDANTIC MODELS
@@ -14,6 +36,7 @@ def test_citation_model_valid():
     assert citation.snippet == "Repayment capacity is strong"
     assert citation.page == 12
 
+
 def test_citation_model_optional_fields():
     """Verify Citation model allows optional snippet and page."""
     citation = Citation(id=1)
@@ -21,43 +44,75 @@ def test_citation_model_optional_fields():
     assert citation.snippet is None
     assert citation.page is None
 
-def test_metric_with_citation_valid():
-    """Verify MetricWithCitation accepts text and citations."""
-    metric = MetricWithCitation(
-        text="Analysis with marker [1]",
-        citations=[Citation(id=1, snippet="Evidence", page=2)]
+
+def test_five_c_item_carries_evidence_and_assessment():
+    """The 5C unit records the figures reasoned from, not just a verdict."""
+    item = FiveCItem(
+        evidence="Revenue 42,000,000 vs Debt 18,200,000",
+        assessment="Adequate capacity to service debt",
+        risk_implication="Low repayment risk",
     )
-    assert metric.text == "Analysis with marker [1]"
-    assert len(metric.citations) == 1
+    assert "42,000,000" in item.evidence
+    assert item.assessment.startswith("Adequate")
 
-def test_metric_with_citation_empty_citations():
-    """Verify MetricWithCitation defaults to an empty list."""
-    metric = MetricWithCitation(text="Analysis without marker")
-    assert metric.text == "Analysis without marker"
-    assert isinstance(metric.citations, list)
-    assert len(metric.citations) == 0
 
-def test_five_cs_schema_enforcement():
-    """Verify FiveCs model requires MetricWithCitation across all 5 dimensions."""
-    valid_metric = MetricWithCitation(text="Good")
+def test_five_c_item_defaults_are_explicit_not_empty():
+    """An unpopulated dimension says NOT PROVIDED rather than silently blank."""
+    item = FiveCItem()
+    assert item.evidence == "NOT PROVIDED"
+    assert item.assessment == "NOT PROVIDED"
+
+
+def test_five_cs_covers_all_dimensions():
+    """Verify FiveCs exposes all five credit dimensions."""
+    item = FiveCItem(evidence="e", assessment="Good", risk_implication="Low")
     five_cs = FiveCs(
-        character=valid_metric,
-        capacity=valid_metric,
-        capital=valid_metric,
-        collateral=valid_metric,
-        conditions=valid_metric
+        character=item, capacity=item, capital=item,
+        collateral=item, conditions=item,
     )
-    assert five_cs.character.text == "Good"
-    
+    for dimension in ("character", "capacity", "capital", "collateral", "conditions"):
+        assert getattr(five_cs, dimension).assessment == "Good"
+
+
+def test_five_cs_rejects_wrong_shape():
+    """A bare string is not a 5C assessment and must not validate."""
     with pytest.raises(ValidationError):
-        # Passing a raw string instead of MetricWithCitation should fail
-        FiveCs(
-            character="Good",
-            capacity=valid_metric,
-            capital=valid_metric,
-            collateral=valid_metric,
-            conditions=valid_metric
-        )
+        FiveCs(character="Good")
+
+
+def test_evidence_item_traceability_fields():
+    """Every evidence row must be able to name its source document and page."""
+    item = EvidenceItem(
+        finding="Total Revenue",
+        value="425000000",
+        source_document="GSTR-3B",
+        page="1",
+        status="VERIFIED",
+    )
+    assert item.source_document == "GSTR-3B"
+    assert item.page == "1"
+    assert item.status == "VERIFIED"
+
+
+def test_evidence_item_tolerates_partial_rows():
+    """P0-4B: a missing status must not invalidate the whole evidence register."""
+    item = EvidenceItem(finding="Total Debt")
+    assert item.status == "UNVERIFIED"
+    assert item.value == "NOT PROVIDED"
+
+
+def test_cam_document_preserves_evidence_register():
+    doc = CAMDocument(**{
+        "evidence_register": [
+            {"finding": "Revenue", "value": "425000000", "source_document": "GSTR-3B",
+             "page": "1", "status": "VERIFIED"},
+            {"finding": "Debt", "value": "182000000"},
+        ],
+    })
+    assert len(doc.evidence_register) == 2
+    assert doc.evidence_register[0].status == "VERIFIED"
+    assert doc.evidence_register[1].status == "UNVERIFIED"
+
 
 # ---------------------------------------------------------
 # INTEGRATION TESTS: LLM FALLBACK BEHAVIOR
@@ -68,52 +123,42 @@ def cam_agent():
     with patch.dict("os.environ", {"GROQ_API_KEY": "dummy_key"}):
         return CAMGeneratorAgent()
 
+
 @pytest.mark.asyncio
 async def test_cam_generator_llm_exception_fallback(cam_agent):
-    """Verify the fallback dictionary strictly adheres to the new MetricWithCitation schema."""
-    
-    # Force an exception during LLM invocation
-    with patch("langchain_core.runnables.base.RunnableSequence.ainvoke", new_callable=AsyncMock) as mock_ainvoke:
+    """The fallback must be identifiable as a failure, carrying no evidence."""
+    with patch("langchain_core.runnables.base.RunnableSequence.ainvoke",
+               new_callable=AsyncMock) as mock_ainvoke:
         mock_ainvoke.side_effect = Exception("Simulated LLM Timeout")
-        
         result = await cam_agent.generate_cam(
-            extracted_pdf_data={},
-            integrity_flags={},
-            web_research={},
-            final_score=85
+            extracted_pdf_data={}, integrity_flags={}, web_research={}, final_score=85,
         )
-        
-        # Verify Fallback Structure
-        assert result["decision"] == "MANUAL REVIEW"
-        
-        # Check all 5 keys exist and match the schema
-        for key in ["character", "capacity", "capital", "collateral", "conditions"]:
-            assert key in result["five_cs"]
-            assert "text" in result["five_cs"][key]
-            assert "citations" in result["five_cs"][key]
-            assert result["five_cs"][key]["text"] == "Manual review required due to system error."
-            assert result["five_cs"][key]["citations"] == []
+
+    assert result["document_control"]["status"] == "ERROR"
+    for key in ("character", "capacity", "capital", "collateral", "conditions"):
+        assert key in result["five_cs"]
+
+    # P0-4: detected as a failure rather than accepted as a MANUAL REVIEW verdict.
+    status, _, reason = validate_cam(result)
+    assert status is AgentStatus.FAILED, reason
+
 
 @pytest.mark.asyncio
 async def test_cam_generator_invalid_json_fallback(cam_agent):
-    """Verify parsing fallback handles completely malformed LLM string outputs."""
-    
-    # Force the unstructured LLM to return a garbage string
+    """Malformed LLM output must fail closed rather than invent a memo."""
+
     class MockContent:
         content = "This is a hallucinated response with no JSON whatsoever."
-    
-    cam_agent.structured_llm = None  # Force raw text extraction mode
-    
-    with patch("langchain_core.runnables.base.RunnableSequence.ainvoke", new_callable=AsyncMock) as mock_ainvoke:
+        response_metadata: dict = {}
+
+    cam_agent.structured_llm = None
+
+    with patch("langchain_core.runnables.base.RunnableSequence.ainvoke",
+               new_callable=AsyncMock) as mock_ainvoke:
         mock_ainvoke.return_value = MockContent()
-        
         result = await cam_agent.generate_cam(
-            extracted_pdf_data={},
-            integrity_flags={},
-            web_research={},
-            final_score=50
+            extracted_pdf_data={}, integrity_flags={}, web_research={}, final_score=50,
         )
-        
-        # ValueError("No JSON found") should have been caught, triggering fallback
-        assert result["decision"] == "MANUAL REVIEW"
-        assert result["five_cs"]["character"]["citations"] == []
+
+    status, _, reason = validate_cam(result)
+    assert status is AgentStatus.FAILED, reason
