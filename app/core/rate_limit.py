@@ -81,7 +81,11 @@ def build_tiers() -> Dict[str, Tier]:
 TIERS: Dict[str, Tier] = build_tiers()
 
 # Roles exempt from tenant limits: platform operators are not a tenant workload.
-EXEMPT_ROLES = frozenset({"SUPERADMIN"})
+# The role stored in tenant_memberships is SUPER_ADMIN (see app/routes/admin.py);
+# the unseparated spelling is accepted too so a mismatch cannot silently make the
+# exemption dead code, which is exactly what happened when only "SUPERADMIN" was
+# listed here and no membership row ever used that value.
+EXEMPT_ROLES = frozenset({"SUPER_ADMIN", "SUPERADMIN"})
 
 
 class SlidingWindowLimiter:
