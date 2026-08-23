@@ -3,7 +3,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import datetime
 
 from app.security.auth_service import verify_access_token
-from app.database.database import get_sqlite_connection
+from app.database.auth_db import get_auth_connection
 
 security = HTTPBearer()
 
@@ -23,7 +23,7 @@ def get_current_user_and_session(credentials: HTTPAuthorizationCredentials = Dep
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
         
     # Verify user still active and not locked
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("SELECT is_active, is_locked FROM users WHERE id = ?", (user_id,))
@@ -58,7 +58,7 @@ def require_role(allowed_roles: list[str]):
         user_id = current_user["user_id"]
         tenant_id = current_user["tenant_id"]
         
-        conn = get_sqlite_connection()
+        conn = get_auth_connection()
         try:
             cursor = conn.cursor()
             cursor.execute("""

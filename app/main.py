@@ -40,6 +40,21 @@ async def lifespan(app: FastAPI):
     regular files older than TEMP_FILE_CLEANUP_MAX_AGE_SECONDS in temp_uploads/ are purged
     during application boot without interfering with active request streams.
     """
+    # Identity store schema. When AUTH_DATABASE_URL is configured the users,
+    # sessions and tenant tables live in Postgres so accounts survive a restart;
+    # on SQLite this is a no-op and init_db() handles the schema as before.
+    try:
+        from app.database.auth_db import init_auth_schema, uses_postgres
+
+        if init_auth_schema():
+            print("[STARTUP] Identity store: Postgres schema verified.")
+        elif not uses_postgres():
+            print("[STARTUP] Identity store: local SQLite (development).")
+    except Exception as auth_schema_err:
+        # Never mask the real failure behind a stack trace in the logs.
+        print(f"[STARTUP] Identity store initialisation failed: {type(auth_schema_err).__name__}")
+        raise
+
     temp_dir = "temp_uploads"
     if os.path.exists(temp_dir) and os.path.isdir(temp_dir):
         now = time.time()

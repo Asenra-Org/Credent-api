@@ -6,7 +6,7 @@ import secrets
 import hashlib
 import datetime
 
-from app.database.database import get_sqlite_connection
+from app.database.auth_db import get_auth_connection
 from app.security.dependencies import get_current_user_and_session, get_current_tenant, require_role
 from app.security.auth_service import hash_password
 
@@ -35,7 +35,7 @@ def get_my_profile(current_user: dict = Depends(get_current_user_and_session)):
     user_id = current_user["user_id"]
     tenant_id = current_user["tenant_id"]
     
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("SELECT email, is_active, created_at FROM users WHERE id = ?", (user_id,))
@@ -72,7 +72,7 @@ def create_organization(
 ):
     """Create a new organization. SUPER_ADMIN only."""
     org_id = str(uuid.uuid4())
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
@@ -91,7 +91,7 @@ def list_organizations(
     current_user: dict = Depends(get_current_user_and_session)
 ):
     """List all organizations. SUPER_ADMIN only."""
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("SELECT id, name, is_active, created_at FROM organizations ORDER BY created_at DESC")
@@ -113,7 +113,7 @@ def invite_user(
     if req.role not in VALID_ROLES:
         raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of: {VALID_ROLES}")
     
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         
@@ -183,7 +183,7 @@ def list_org_users(
     current_user: dict = Depends(get_current_user_and_session)
 ):
     """List all users in an organization."""
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("""
@@ -210,7 +210,7 @@ def update_user_status(
     current_user: dict = Depends(get_current_user_and_session)
 ):
     """Enable or disable a user."""
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("UPDATE users SET is_active = ? WHERE id = ?", (1 if req.is_active else 0, user_id))
@@ -235,7 +235,7 @@ def update_user_role(
         raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of: {VALID_ROLES}")
     
     tenant_id = current_user["tenant_id"]
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(

@@ -7,7 +7,7 @@ import pyotp
 import uuid
 import datetime
 from fastapi import HTTPException, status
-from app.database.database import get_sqlite_connection
+from app.database.auth_db import get_auth_connection
 
 JWT_SECRET = os.getenv("JWT_SECRET", "super-secret-development-key-only")
 JWT_ALGORITHM = "HS256"
@@ -97,7 +97,7 @@ def create_session(user_id: str, ip_address: str = None, user_agent: str = None)
     
     expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("""
@@ -111,7 +111,7 @@ def create_session(user_id: str, ip_address: str = None, user_agent: str = None)
     return session_id, raw_token
 
 def revoke_session(session_id: str):
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
@@ -142,7 +142,7 @@ def _get_lockout_duration(failed_count: int) -> int:
         return LOCKOUT_MINUTES_3
 
 def handle_failed_login(email: str):
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("SELECT id, failed_login_count FROM users WHERE email = ? COLLATE NOCASE", (email,))
@@ -170,7 +170,7 @@ def handle_failed_login(email: str):
         conn.close()
 
 def handle_successful_login(user_id: str):
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("""
@@ -191,7 +191,7 @@ def bootstrap_system(provided_token: str, initial_password: str) -> dict:
     if not provided_token or not secrets.compare_digest(provided_token, BOOTSTRAP_TOKEN):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid bootstrap token")
         
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         
@@ -241,7 +241,7 @@ def enroll_mfa(user_id: str, email: str) -> str:
     Note: This does NOT enable MFA. Verification is required to activate it.
     """
     secret = pyotp.random_base32()
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("UPDATE users SET mfa_secret = ? WHERE id = ?", (secret, user_id))
@@ -256,7 +256,7 @@ def verify_and_enable_mfa(user_id: str, code: str) -> bool:
     """
     Verifies a TOTP code and activates MFA if successful.
     """
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("SELECT mfa_secret FROM users WHERE id = ?", (user_id,))
@@ -279,7 +279,7 @@ def verify_mfa_login(user_id: str, code: str) -> bool:
     """
     Verifies a TOTP code during login.
     """
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("SELECT mfa_secret, mfa_enabled FROM users WHERE id = ?", (user_id,))
@@ -300,7 +300,7 @@ def handle_failed_mfa(user_id: str):
     """
     Re-uses lockout logic for MFA failures to prevent brute force.
     """
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("SELECT email FROM users WHERE id = ?", (user_id,))
@@ -314,7 +314,7 @@ def disable_mfa(user_id: str):
     """
     Disables MFA and revokes all active sessions for security.
     """
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("UPDATE users SET mfa_enabled = 0, mfa_secret = NULL WHERE id = ?", (user_id,))

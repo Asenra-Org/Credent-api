@@ -19,7 +19,7 @@ from app.security.auth_service import (
     generate_mfa_challenge_token,
     verify_mfa_challenge_token
 )
-from app.database.database import get_sqlite_connection
+from app.database.auth_db import get_auth_connection
 from app.security.dependencies import get_current_user_and_session
 from app.security.rate_limit_dependency import rate_limit
 
@@ -51,7 +51,7 @@ def bootstrap(req: BootstrapRequest, request: Request):
 
 @router.post("/login", dependencies=[Depends(rate_limit("auth"))])
 def login(req: LoginRequest, request: Request, response: Response):
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("""
@@ -115,7 +115,7 @@ def mfa_verify_login(req: MFALoginRequest, request: Request, response: Response)
     tenant_id = payload["tenant_id"]
 
     # Check lock status again just in case
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("SELECT is_locked, lockout_until FROM users WHERE id = ?", (user_id,))
@@ -144,7 +144,7 @@ def mfa_verify_login(req: MFALoginRequest, request: Request, response: Response)
 def mfa_enroll(current_user: dict = Depends(get_current_user_and_session)):
     user_id = current_user["user_id"]
 
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("SELECT email, mfa_enabled FROM users WHERE id = ?", (user_id,))
@@ -184,7 +184,7 @@ def refresh(request: Request, response: Response):
 
     token_hash = hash_token(refresh_token)
 
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("""
@@ -231,7 +231,7 @@ def logout(request: Request, response: Response):
     refresh_token = request.cookies.get("refresh_token")
     if refresh_token:
         token_hash = hash_token(refresh_token)
-        conn = get_sqlite_connection()
+        conn = get_auth_connection()
         try:
             cursor = conn.cursor()
             cursor.execute("SELECT id FROM sessions WHERE refresh_token_hash = ?", (token_hash,))
