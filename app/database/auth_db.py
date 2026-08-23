@@ -38,12 +38,45 @@ AUTH_DATABASE_URL_VARS = ("AUTH_DATABASE_URL", "DATABASE_URL", "SUPABASE_DB_URL"
 _local = threading.local()
 
 
+# Only a genuine Postgres DSN can back the identity store. DATABASE_URL is a
+# conventional name that other tooling also claims, so a value left over from a
+# different project (for example a SQLAlchemy "sqlite+aiosqlite:///..." URL) can
+# easily be present. Handing that to psycopg2 aborts application startup with
+#   psycopg2.ProgrammingError: invalid dsn: missing "=" after "sqlite+aiosqlite..."
+# so the scheme is validated here and anything else is ignored rather than
+# crashing the process.
+_POSTGRES_SCHEMES = ("postgresql://", "postgres://", "postgresql+psycopg2://")
+
+
+def is_postgres_dsn(value: str) -> bool:
+    return (value or "").strip().lower().startswith(_POSTGRES_SCHEMES)
+
+
+def _scheme_of(value: str) -> str:
+    """Scheme prefix only - never the host, user or password."""
+    head = (value or "").split("://", 1)[0]
+    return head[:32] if head else "(none)"
+
+
 def auth_database_url() -> Optional[str]:
-    """Postgres URL for the identity store, if one is configured."""
+    """Postgres DSN for the identity store, if one is validly configured.
+
+    Returns None when nothing is set, or when the configured value is not a
+    Postgres DSN - in which case SQLite remains in use and (in production) the
+    P0-5 guard still refuses to start with an ephemeral identity store.
+    """
     for var in AUTH_DATABASE_URL_VARS:
         value = (os.getenv(var) or "").strip()
-        if value:
+        if not value:
+            continue
+        if is_postgres_dsn(value):
             return value
+        # Log the variable and scheme only. The DSN carries credentials.
+        print(
+            f"[AUTH-DB] Ignoring {var}: not a Postgres DSN "
+            f"(scheme={_scheme_of(value)}). The identity store needs a "
+            f"postgresql:// URL; set AUTH_DATABASE_URL."
+        )
     return None
 
 

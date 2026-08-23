@@ -54,6 +54,63 @@ def test_any_supported_env_var_selects_postgres(monkeypatch, var):
     assert auth_database_url().startswith("postgresql://")
 
 
+def test_non_postgres_database_url_is_ignored(monkeypatch):
+    """A DATABASE_URL left over from another project must not abort startup.
+
+    Reproduces the real deploy failure: Render carried
+    DATABASE_URL="sqlite+aiosqlite:///./intelliassess.db" from an unrelated
+    service. Passing that to psycopg2 raised
+    ProgrammingError: invalid dsn: missing "=" after "sqlite+aiosqlite..."
+    and the container exited during lifespan startup.
+    """
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///./intelliassess.db")
+    assert uses_postgres() is False
+    assert auth_database_url() is None
+    conn = get_auth_connection()          # must not raise
+    assert isinstance(conn, sqlite3.Connection)
+    conn.close()
+
+
+@pytest.mark.parametrize("value", [
+    "sqlite+aiosqlite:///./intelliassess.db",
+    "sqlite:///./local.db",
+    "mysql://user:pw@host/db",
+    "redis://localhost:6379/0",
+    "not-a-url-at-all",
+])
+def test_only_postgres_schemes_are_accepted(monkeypatch, value):
+    monkeypatch.setenv("AUTH_DATABASE_URL", value)
+    assert uses_postgres() is False, f"{value!r} must not be treated as a Postgres DSN"
+
+
+@pytest.mark.parametrize("value", [
+    "postgresql://u:p@db.abc.supabase.co:5432/postgres",
+    "postgres://u:p@host:5432/db",
+    "postgresql+psycopg2://u:p@host:5432/db",
+    "POSTGRESQL://u:p@host:5432/db",
+])
+def test_valid_postgres_schemes_are_accepted(monkeypatch, value):
+    monkeypatch.setenv("AUTH_DATABASE_URL", value)
+    assert uses_postgres() is True
+
+
+def test_valid_auth_url_wins_over_invalid_database_url(monkeypatch):
+    """A correct AUTH_DATABASE_URL must not be defeated by a stale DATABASE_URL."""
+    monkeypatch.setenv("AUTH_DATABASE_URL", "postgresql://u:p@host:5432/db")
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///./intelliassess.db")
+    assert auth_database_url() == "postgresql://u:p@host:5432/db"
+
+
+def test_rejection_log_does_not_leak_credentials(capsys, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "mysql://admin:SuperSecret123@db.internal:3306/app")
+    auth_database_url()
+    out = capsys.readouterr().out
+    assert "SuperSecret123" not in out
+    assert "db.internal" not in out
+    assert "admin" not in out
+    assert "scheme=mysql" in out
+
+
 def test_blank_url_is_ignored(monkeypatch):
     monkeypatch.setenv("AUTH_DATABASE_URL", "   ")
     assert uses_postgres() is False
