@@ -211,7 +211,7 @@ def bootstrap_system(provided_token: str, initial_password: str) -> dict:
         cursor.execute("""
             INSERT INTO users (id, email, password_hash)
             VALUES (?, ?, ?)
-        """, (user_id, "admin@credent.local", password_hash))
+        """, (user_id, "maker@hdfc.com", password_hash))
         
         # Create Organization
         cursor.execute("INSERT INTO organizations (id, name) VALUES (?, ?)", (tenant_id, "CRESEM Platform"))
@@ -226,7 +226,7 @@ def bootstrap_system(provided_token: str, initial_password: str) -> dict:
         cursor.execute("UPDATE system_state SET is_bootstrapped = 1 WHERE id = 1")
         
         conn.commit()
-        return {"user_id": user_id, "tenant_id": tenant_id, "email": "admin@credent.local"}
+        return {"user_id": user_id, "tenant_id": tenant_id, "email": "maker@hdfc.com"}
     except Exception as e:
         conn.rollback()
         raise e
@@ -325,3 +325,4 @@ def disable_mfa(user_id: str):
         conn.commit()
     finally:
         conn.close()
+
