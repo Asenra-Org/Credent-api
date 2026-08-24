@@ -128,9 +128,11 @@ async def test_generate_cam_pipeline_success(cam_agent):
         recommendation=Recommendation(decision="REJECT", rationale="Score under 60."),
     )
 
+    class MockMsg:
+        content = mock_cam.model_dump_json()
     with patch("langchain_core.runnables.base.RunnableSequence.ainvoke",
                new_callable=AsyncMock) as mock_ainvoke:
-        mock_ainvoke.return_value = mock_cam
+        mock_ainvoke.return_value = MockMsg()
         result = await cam_agent.generate_cam(
             extracted_pdf_data={"test": "data"},
             integrity_flags={},
