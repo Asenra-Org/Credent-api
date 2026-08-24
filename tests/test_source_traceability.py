@@ -213,11 +213,11 @@ class TestCitationExtraction:
     @pytest.mark.asyncio
     async def test_revenue_citation_extracted(self, agent):
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke") as m:
+        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "X Corp", "sector": "Tech",
-                "total_revenue": 500, "total_debt": null, "shareholder_equity": null,
+                "ebitda": null, "pat": null, "total_revenue": 500, "total_debt": null, "shareholder_equity": null,
                 "current_assets": null, "current_liabilities": null,
                 "base_score": 70, "qualitative_notes": null,
                 "financial_commitments": [], "legal_risks": [], "sanction_details": [],
@@ -234,11 +234,11 @@ class TestCitationExtraction:
     @pytest.mark.asyncio
     async def test_debt_citation_extracted(self, agent):
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke") as m:
+        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "X Corp", "sector": "Tech",
-                "total_revenue": null, "total_debt": 200, "shareholder_equity": null,
+                "ebitda": null, "pat": null, "total_revenue": null, "total_debt": 200, "shareholder_equity": null,
                 "current_assets": null, "current_liabilities": null,
                 "base_score": 60, "qualitative_notes": null,
                 "financial_commitments": [], "legal_risks": [], "sanction_details": [],
@@ -256,11 +256,11 @@ class TestCitationExtraction:
     @pytest.mark.asyncio
     async def test_equity_citation_extracted(self, agent):
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke") as m:
+        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "X Corp", "sector": "Tech",
-                "total_revenue": null, "total_debt": null, "shareholder_equity": 300,
+                "ebitda": null, "pat": null, "total_revenue": null, "total_debt": null, "shareholder_equity": 300,
                 "current_assets": null, "current_liabilities": null,
                 "base_score": 72, "qualitative_notes": null,
                 "financial_commitments": [], "legal_risks": [], "sanction_details": [],
@@ -277,11 +277,11 @@ class TestCitationExtraction:
     @pytest.mark.asyncio
     async def test_all_three_citations_extracted(self, agent):
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke") as m:
+        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "FullCorp", "sector": "Steel",
-                "total_revenue": 100, "total_debt": 50, "shareholder_equity": 80,
+                "ebitda": null, "pat": null, "total_revenue": 100, "total_debt": 50, "shareholder_equity": 80,
                 "current_assets": null, "current_liabilities": null,
                 "base_score": 85, "qualitative_notes": null,
                 "financial_commitments": [], "legal_risks": [], "sanction_details": [],
@@ -301,11 +301,11 @@ class TestCitationExtraction:
     async def test_string_page_number_coerced_to_int(self, agent):
         """LLM returns page as string — must be coerced to int."""
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke") as m:
+        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "Corp", "sector": "Tech",
-                "total_revenue": 50, "total_debt": null, "shareholder_equity": null,
+                "ebitda": null, "pat": null, "total_revenue": 50, "total_debt": null, "shareholder_equity": null,
                 "current_assets": null, "current_liabilities": null,
                 "base_score": 70, "qualitative_notes": null,
                 "financial_commitments": [], "legal_risks": [], "sanction_details": [],
@@ -323,11 +323,11 @@ class TestCitationExtraction:
     async def test_missing_revenue_citation_is_none(self, agent):
         """When revenue is absent, its citation must be None."""
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke") as m:
+        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "Corp", "sector": "Tech",
-                "total_revenue": null, "total_debt": null, "shareholder_equity": null,
+                "ebitda": null, "pat": null, "total_revenue": null, "total_debt": null, "shareholder_equity": null,
                 "current_assets": null, "current_liabilities": null,
                 "base_score": 50, "qualitative_notes": null,
                 "financial_commitments": [], "legal_risks": [], "sanction_details": [],
@@ -342,11 +342,11 @@ class TestCitationExtraction:
     async def test_all_citations_null_in_response(self, agent):
         """If LLM returns null citations entirely, all keys default to None."""
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke") as m:
+        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "Corp", "sector": "Tech",
-                "total_revenue": null, "total_debt": null, "shareholder_equity": null,
+                "ebitda": null, "pat": null, "total_revenue": null, "total_debt": null, "shareholder_equity": null,
                 "current_assets": null, "current_liabilities": null,
                 "base_score": 50, "qualitative_notes": null,
                 "financial_commitments": [], "legal_risks": [], "sanction_details": [],
@@ -361,11 +361,11 @@ class TestCitationExtraction:
     async def test_citations_key_always_present_in_result(self, agent):
         """citations key must be present regardless of LLM response content."""
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke") as m:
+        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "Corp", "sector": "Tech",
-                "total_revenue": 200, "total_debt": null, "shareholder_equity": null,
+                "ebitda": null, "pat": null, "total_revenue": 200, "total_debt": null, "shareholder_equity": null,
                 "base_score": 70
             }
             """)
@@ -376,11 +376,11 @@ class TestCitationExtraction:
     async def test_backward_compat_alias_keys_synchronized(self, agent):
         """revenue and total_revenue must point to the same citation object."""
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke") as m:
+        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "Corp", "sector": "Tech",
-                "total_revenue": 100, "total_debt": 40, "shareholder_equity": 60,
+                "ebitda": null, "pat": null, "total_revenue": 100, "total_debt": 40, "shareholder_equity": 60,
                 "current_assets": null, "current_liabilities": null,
                 "base_score": 80, "qualitative_notes": null,
                 "financial_commitments": [], "legal_risks": [], "sanction_details": [],
@@ -400,11 +400,11 @@ class TestCitationExtraction:
     async def test_invalid_page_value_in_citation(self, agent):
         """Non-numeric page value must be coerced to None — system must not crash."""
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke") as m:
+        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "Corp", "sector": "Tech",
-                "total_revenue": 50, "total_debt": null, "shareholder_equity": null,
+                "ebitda": null, "pat": null, "total_revenue": 50, "total_debt": null, "shareholder_equity": null,
                 "current_assets": null, "current_liabilities": null,
                 "base_score": 60, "qualitative_notes": null,
                 "financial_commitments": [], "legal_risks": [], "sanction_details": [],
@@ -432,11 +432,11 @@ class TestCitationExtraction:
     async def test_existing_fields_unchanged_after_citations_added(self, agent):
         """Existing fields (company_name, base_score, etc.) must remain intact."""
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke") as m:
+        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "Asenra Ltd", "sector": "Fintech",
-                "total_revenue": 300, "total_debt": 100, "shareholder_equity": 200,
+                "ebitda": null, "pat": null, "total_revenue": 300, "total_debt": 100, "shareholder_equity": 200,
                 "current_assets": 150, "current_liabilities": 90,
                 "base_score": 88, "qualitative_notes": "Strong CIBIL",
                 "financial_commitments": ["Axis Bank OD"], "legal_risks": [],
