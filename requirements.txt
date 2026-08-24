@@ -52,9 +52,5 @@ h2==4.4.1
 json-repair==0.63.3
 celery==5.4.0
 
-# DELIBERATELY NOT DECLARED:
-#   langchain-openai - imported lazily in app/core/llm.py and only reachable when
-#     SARVAM_API_KEY is set. Declaring it would ship an unused package on the
-#     Groq-only path. A module-level import of it previously crashed deployment.
-#   nltk - imported by app/utils/text_processing.py, which nothing imports.
-#     Declare it only if that module is brought back into use.
+
+langchain-openai>=0.1.0
