@@ -103,7 +103,7 @@ def login(req: LoginRequest, request: Request, response: Response):
         session_id, raw_refresh = create_session(user_id, ip_addr, user_agent)
         access_token = generate_access_token(user_id, tenant_id, session_id)
 
-        response.set_cookie(key="refresh_token", value=raw_refresh, httponly=True, secure=False, samesite="Lax", max_age=86400)
+        response.set_cookie(key="refresh_token", value=raw_refresh, httponly=True, secure=(os.getenv("APP_ENV") == "production"), samesite=("None" if os.getenv("APP_ENV") == "production" else "Lax"), max_age=86400)
         return {"access_token": access_token, "token_type": "bearer"}
     finally:
         conn.close()
@@ -135,7 +135,7 @@ def mfa_verify_login(req: MFALoginRequest, request: Request, response: Response)
         session_id, raw_refresh = create_session(user_id, ip_addr, user_agent)
         access_token = generate_access_token(user_id, tenant_id, session_id)
 
-        response.set_cookie(key="refresh_token", value=raw_refresh, httponly=True, secure=False, samesite="Lax", max_age=86400)
+        response.set_cookie(key="refresh_token", value=raw_refresh, httponly=True, secure=(os.getenv("APP_ENV") == "production"), samesite=("None" if os.getenv("APP_ENV") == "production" else "Lax"), max_age=86400)
         return {"access_token": access_token, "token_type": "bearer"}
     finally:
         conn.close()
@@ -241,5 +241,5 @@ def logout(request: Request, response: Response):
         finally:
             conn.close()
 
-    response.delete_cookie("refresh_token", secure=False, samesite="Lax")
+    response.delete_cookie("refresh_token", secure=(os.getenv("APP_ENV") == "production"), samesite=("None" if os.getenv("APP_ENV") == "production" else "Lax"))
     return {"message": "Logged out successfully"}
