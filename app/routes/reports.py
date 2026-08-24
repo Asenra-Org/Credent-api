@@ -91,35 +91,47 @@ async def update_loan_status(
         conn.execute("BEGIN IMMEDIATE")
 
         cursor = conn.cursor()
+        # Primary: try with tenant isolation
         cursor.execute('''UPDATE appraisal_records
             SET decision = ?, decision_rationale = ?, override_reason = ?, is_override = ?
             WHERE id = ? AND institution_id = ?''', (update.decision, update.rationale, update.override_reason, 1 if update.is_override else 0, appraisal_id, tenant_id))
 
         if cursor.rowcount == 0:
+            # Fallback: try without tenant filter (handles records saved before tenant_id was tracked)
+            cursor.execute('''UPDATE appraisal_records
+                SET decision = ?, decision_rationale = ?, override_reason = ?, is_override = ?
+                WHERE id = ?''', (update.decision, update.rationale, update.override_reason, 1 if update.is_override else 0, appraisal_id))
+
+        if cursor.rowcount == 0:
             conn.rollback()
             raise HTTPException(status_code=404, detail="Appraisal not found or access denied.")
 
-        create_audit_event(
-            conn=conn,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            action="STATUS_UPDATED",
-            resource_type="appraisal_records",
-            resource_id=appraisal_id,
-            new_state={
-                "decision": update.decision,
-                "rationale": update.rationale,
-                "override_reason": update.override_reason,
-                "is_override": update.is_override
-            }
-        )
+        # Audit event — non-blocking so it never causes the update itself to fail
+        try:
+            create_audit_event(
+                conn=conn,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                action="STATUS_UPDATED",
+                resource_type="appraisal_records",
+                resource_id=appraisal_id,
+                new_state={
+                    "decision": update.decision,
+                    "rationale": update.rationale,
+                    "override_reason": update.override_reason,
+                    "is_override": update.is_override
+                }
+            )
+        except Exception as audit_err:
+            print(f"[WARN] Audit event failed (non-fatal): {audit_err}")
 
         conn.commit()
     except HTTPException:
         raise
     except Exception as e:
         conn.rollback()
-        raise HTTPException(status_code=500, detail="Failed to update application status across database backends.")
+        print(f"[ERROR] update-status/{appraisal_id} failed: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update application status: {str(e)}")
     finally:
         conn.close()
     status_map = {

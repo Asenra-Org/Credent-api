@@ -333,7 +333,7 @@ class CitationMetadata(BaseModel):
 
 class RiskExtraction(BaseModel):
     company_name: str = Field(description="The name of the company applying for credit")
-    sector: str = Field(description="The industry sector (e.g., Manufacturing, Fintech) inferred from the text")
+    sector: str = Field(description="The industry sector of the company. MUST be one of the following standard categories ONLY: Manufacturing, Technology, Real Estate, Agriculture, Healthcare, Retail, Textiles, Automotive, Hospitality, Infrastructure, Pharmaceuticals, Energy, Banking and Financial Services, Trading, Services. If the sector is unclear, infer the closest match from the document context. DO NOT use vague labels like 'Unknown', 'General Business', or 'Synthetic / Non-Production'.")
 
     # NEW: Quantifiable Credit Data (Crucial to prevent ESG-only approvals)
     total_revenue: Optional[Any] = Field(None, description="Annual revenue (turnover)")
@@ -341,6 +341,8 @@ class RiskExtraction(BaseModel):
     shareholder_equity: Optional[Any] = Field(None, description="Net worth / Share capital + reserves")
     current_assets: Optional[float] = Field(None, description="Total current assets")
     current_liabilities: Optional[float] = Field(None, description="Total current liabilities")
+    ebitda: Optional[Any] = Field(None, description="Earnings Before Interest, Taxes, Depreciation and Amortization. Extract from P&L if available. If not directly stated, compute as Operating Profit + Depreciation if both are present.")
+    pat: Optional[Any] = Field(None, description="Profit After Tax (Net Profit). Extract from P&L or Income Statement. Look for 'Net Profit', 'PAT', 'Profit for the year'.")
 
     base_score: int = Field(description="An estimated starting credit score (0-100)")
     qualitative_notes: Optional[str] = Field(None, description="Summary of operational capacity or CIBIL/GSTR notes")
@@ -1139,12 +1141,14 @@ class DocumentIngestionAgent:
             JSON schema:
             {{
                 "company_name": "string",
-                "sector": "string",
+                "sector": "MUST be one of: Manufacturing, Technology, Real Estate, Agriculture, Healthcare, Retail, Textiles, Automotive, Hospitality, Infrastructure, Pharmaceuticals, Energy, Banking and Financial Services, Trading, Services. Infer the closest match from context. NEVER use 'Unknown', 'General Business', 'Synthetic / Non-Production' or any other label outside this list.",
                 "total_revenue": float or null,
                 "total_debt": float or null,
                 "shareholder_equity": float or null,
                 "current_assets": float or null,
                 "current_liabilities": float or null,
+                "ebitda": "float or null — Extract EBITDA or Operating Profit from P&L. If not directly stated, compute as (Operating Profit + Depreciation). If completely absent, return null.",
+                "pat": "float or null — Extract Profit After Tax / Net Profit from P&L. Look for 'Net Profit', 'PAT', 'Profit for the year'. If absent, return null.",
                 "base_score": 85,
                 "qualitative_notes": "string",
                 "financial_commitments": ["string"],
@@ -1296,7 +1300,7 @@ class DocumentIngestionAgent:
                 parsed = result.model_dump()
 
                 # NORMALIZE FINANCIALS
-                fin_fields = ["total_revenue", "total_debt", "shareholder_equity", "current_assets", "current_liabilities"]
+                fin_fields = ["total_revenue", "total_debt", "shareholder_equity", "current_assets", "current_liabilities", "ebitda", "pat"]
                 for field in fin_fields:
                     parsed[field] = normalize_to_inr(parsed.get(field))
 
@@ -1323,7 +1327,7 @@ class DocumentIngestionAgent:
                 parsed.setdefault(key, default_val)
 
             # NORMALIZE FINANCIALS
-            fin_fields = ["total_revenue", "total_debt", "shareholder_equity", "current_assets", "current_liabilities"]
+            fin_fields = ["total_revenue", "total_debt", "shareholder_equity", "current_assets", "current_liabilities", "ebitda", "pat"]
             for field in fin_fields:
                 parsed[field] = normalize_to_inr(parsed.get(field))
 

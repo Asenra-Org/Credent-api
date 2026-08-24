@@ -188,15 +188,21 @@ class ChatGroqWithFallback:
             # A module-level import crashes Groq-only deployments on startup.
             from langchain_openai import ChatOpenAI
 
+            # Ensure max_tokens defaults to LLM_MAX_TOKENS from env (fallback to 4000)
+            max_tokens = kwargs.get("max_tokens")
+            if max_tokens is None:
+                max_tokens = int(os.getenv("LLM_MAX_TOKENS", 4000))
+                
             kwargs.pop("api_key", None)
             return ChatOpenAI(
                 base_url="https://api.sarvam.ai/v1",
                 api_key=sarvam_api_key,
                 model="sarvam-105b",
                 temperature=kwargs.get("temperature", 0.1),
-                max_tokens=kwargs.get("max_tokens", None),
+                max_tokens=None, # Prevents LangChain from sending max_completion_tokens
+                model_kwargs={"extra_body": {"max_tokens": max_tokens}},
                 timeout=None,
-                max_retries=0,
+                max_retries=3,
             )
 
         chain = _model_chain()

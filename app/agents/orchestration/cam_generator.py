@@ -189,10 +189,10 @@ class CAMGeneratorAgent:
             max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
             api_key=os.getenv("GROQ_API_KEY")
         )
-        try:
-            self.structured_llm = self.llm.with_structured_output(CAMDocument, method="json_mode")
-        except:
-            self.structured_llm = None
+        # Force structured_llm to None to bypass LangChain's strict length-checking parser.
+        # This routes generation to the fallback path which uses `json-repair`, 
+        # allowing us to salvage truncated JSONs when Sarvam hits output limits.
+        self.structured_llm = None
 
     def _build_prompt(self):
         schema_json = json.dumps(CAMDocument.model_json_schema(), indent=2).replace("{", "{{").replace("}", "}}")
@@ -218,6 +218,11 @@ class CAMGeneratorAgent:
                write "NOT PROVIDED" in five_cs whenever financial figures have been supplied;
                if collateral is genuinely absent, say so and state the risk of unsecured
                exposure rather than leaving it blank.
+            7. EXECUTIVE SUMMARY FINANCIALS: The pdf_data contains fields: total_revenue, ebitda, pat, total_debt, shareholder_equity.
+               - Map total_revenue → executive_summary.revenue
+               - Map ebitda → executive_summary.ebitda  
+               - Map pat → executive_summary.pat
+               - If these fields exist and are not null in pdf_data, you MUST use them verbatim. Do NOT write "NOT PROVIDED" if the value is present in the input data.
             
             Ensure the output strictly adheres to this EXACT JSON schema without generating any trailing commas or malformed curly braces:
             {schema_json}
