@@ -178,6 +178,97 @@ def init_db():
     )''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_loan_cases_status ON loan_cases(status)')
 
+    # ------------------------------------------------------------------
+    # [PHASE-2] Case workspace columns.
+    #
+    # Additive only. Every column is nullable with no backfill: a case that
+    # predates this migration genuinely has no recorded borrower name or
+    # assignee, and inventing one would put fabricated data in front of a
+    # credit officer. NULL reads correctly as "not recorded".
+    #
+    # lifecycle_status holds an explicitly recorded review state (IN_REVIEW,
+    # RETURNED, or a human decision). When NULL the state is derived from the
+    # execution signals by app.core.case_status.derive_case_status.
+    # ------------------------------------------------------------------
+    cursor.execute('PRAGMA table_info(loan_cases)')
+    _case_columns = [col[1] for col in cursor.fetchall()]
+    for _col, _type in (
+        ('borrower_name', 'TEXT'),
+        ('case_reference', 'TEXT'),
+        ('facility_type', 'TEXT'),
+        ('requested_amount', 'REAL'),
+        ('created_by', 'TEXT'),
+        ('assigned_to', 'TEXT'),
+        ('submitted_at', 'TIMESTAMP'),
+        ('reviewed_by', 'TEXT'),
+        ('reviewed_at', 'TIMESTAMP'),
+        ('decision', 'TEXT'),
+        ('risk_grade', 'TEXT'),
+        ('analysis_status', 'TEXT'),
+        ('decision_allowed', 'INTEGER'),
+        ('lifecycle_status', 'TEXT'),
+        ('appraisal_id', 'TEXT'),
+    ):
+        if _col not in _case_columns:
+            try:
+                cursor.execute(f'ALTER TABLE loan_cases ADD COLUMN {_col} {_type}')
+            except sqlite3.OperationalError as e:
+                if 'duplicate column name' not in str(e).lower():
+                    raise e
+
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_loan_cases_institution ON loan_cases(institution_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_loan_cases_created_at ON loan_cases(created_at DESC)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_loan_cases_assigned ON loan_cases(assigned_to)')
+
+    # [PHASE-2] Link an appraisal record back to the case that produced it.
+    # Without this an appraisal and its case share no key, so a case workspace
+    # cannot find its own CAM.
+    cursor.execute('PRAGMA table_info(appraisal_records)')
+    _appraisal_columns = [col[1] for col in cursor.fetchall()]
+    if 'case_id' not in _appraisal_columns:
+        try:
+            cursor.execute('ALTER TABLE appraisal_records ADD COLUMN case_id TEXT')
+        except sqlite3.OperationalError as e:
+            if 'duplicate column name' not in str(e).lower():
+                raise e
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_appraisal_case_id ON appraisal_records(case_id)')
+
+    # [PHASE-2] Documents belonging to a case. Uploads previously existed only
+    # as a storage_path string inside loan_cases.input_data, so nothing could
+    # list them, show per-document extraction status, or retry one file.
+    cursor.execute('''CREATE TABLE IF NOT EXISTS case_documents (
+        id TEXT PRIMARY KEY,
+        case_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        doc_type TEXT,
+        storage_path TEXT,
+        page_count INTEGER,
+        size_bytes INTEGER,
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        error_code TEXT,
+        uploaded_by TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_case_documents_case ON case_documents(case_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_case_documents_tenant ON case_documents(tenant_id)')
+
+    # [PHASE-2] Reviewer actions that are not themselves decisions: returning a
+    # case to the analyst, requesting information, or leaving a review note.
+    # The decision itself continues to flow through the existing audited
+    # update-status path.
+    cursor.execute('''CREATE TABLE IF NOT EXISTS case_reviews (
+        id TEXT PRIMARY KEY,
+        case_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        note TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_case_reviews_case ON case_reviews(case_id)')
+
     # =========================================================================
     # [ASE-60] Identity, RBAC & Audit System Foundation
     # =========================================================================
@@ -196,6 +287,18 @@ def init_db():
         mfa_enabled INTEGER DEFAULT 0
     )''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email COLLATE NOCASE)')
+
+    # [PHASE-4] Account activity for the platform user console. Additive and
+    # nullable: an account that has never signed in since this column existed
+    # genuinely has no last-login time, and NULL is the honest reading.
+    cursor.execute('PRAGMA table_info(users)')
+    _user_columns = [col[1] for col in cursor.fetchall()]
+    if 'last_login_at' not in _user_columns:
+        try:
+            cursor.execute('ALTER TABLE users ADD COLUMN last_login_at TIMESTAMP')
+        except sqlite3.OperationalError as e:
+            if 'duplicate column name' not in str(e).lower():
+                raise e
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS organizations (
         id TEXT PRIMARY KEY,
@@ -510,7 +613,7 @@ def save_appraisal(data):
         _degraded = data.get("degraded_components")
         _degraded_json = json.dumps(_degraded) if _degraded is not None else None
         _decision_allowed = None if data.get("decision_allowed") is None else (1 if data.get("decision_allowed") else 0)
-        cursor.execute('''INSERT INTO appraisal_records (id, company_id, revenue, debt, base_score, adjusted_score, decision, recommended_loan_amount, recommended_interest_rate, decision_rationale, raw_document_data, integrity_flags, web_research, cam_report, financial_ratios, management_score, promoter_analysis, governance_assessment, institution_id, override_reason, is_override, model_provider, model_name, model_version, prompt_version, agent_version, temperature, provider_request_id, agent_provenance, analysis_status, degraded_components, decision_allowed, provenance_recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (record_id, data.get("company_id"), data.get("revenue"), data.get("debt"), data.get("base_score"), data.get("adjusted_score"), data.get("decision"), data.get("recommended_loan_amount"), data.get("recommended_interest_rate"), data.get("decision_rationale"), json.dumps(data.get("raw_document_data")), json.dumps(data.get("integrity_flags")), json.dumps(data.get("web_research")), json.dumps(data.get("cam_report")), json.dumps(payload["financial_ratios"]), payload["management_score"], json.dumps(payload["promoter_analysis"]), json.dumps(payload["governance_assessment"]), payload["institution_id"], data.get("override_reason"), 1 if data.get("is_override") else 0, _prov.get("provider"), _prov.get("model_name"), _prov.get("model_version"), _prov.get("prompt_version"), _prov.get("agent_version"), _prov.get("temperature"), _prov.get("provider_request_id"), _agent_prov_json, data.get("analysis_status"), _degraded_json, _decision_allowed, _prov.get("generated_at")))
+        cursor.execute('''INSERT INTO appraisal_records (id, company_id, revenue, debt, base_score, adjusted_score, decision, recommended_loan_amount, recommended_interest_rate, decision_rationale, raw_document_data, integrity_flags, web_research, cam_report, financial_ratios, management_score, promoter_analysis, governance_assessment, institution_id, case_id, override_reason, is_override, model_provider, model_name, model_version, prompt_version, agent_version, temperature, provider_request_id, agent_provenance, analysis_status, degraded_components, decision_allowed, provenance_recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (record_id, data.get("company_id"), data.get("revenue"), data.get("debt"), data.get("base_score"), data.get("adjusted_score"), data.get("decision"), data.get("recommended_loan_amount"), data.get("recommended_interest_rate"), data.get("decision_rationale"), json.dumps(data.get("raw_document_data")), json.dumps(data.get("integrity_flags")), json.dumps(data.get("web_research")), json.dumps(data.get("cam_report")), json.dumps(payload["financial_ratios"]), payload["management_score"], json.dumps(payload["promoter_analysis"]), json.dumps(payload["governance_assessment"]), payload["institution_id"], data.get("case_id"), data.get("override_reason"), 1 if data.get("is_override") else 0, _prov.get("provider"), _prov.get("model_name"), _prov.get("model_version"), _prov.get("prompt_version"), _prov.get("agent_version"), _prov.get("temperature"), _prov.get("provider_request_id"), _agent_prov_json, data.get("analysis_status"), _degraded_json, _decision_allowed, _prov.get("generated_at")))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -697,5 +800,382 @@ def save_policy(policy_data: dict) -> bool:
     except Exception as e:
         print(f"[ERROR] Error saving policy: {e}")
         return False
+
+# =============================================================================
+# [PHASE-2] Case listing, case detail and audit reads.
+#
+# Every function here takes tenant_id as a required argument and filters on it
+# in SQL. Tenant scoping is not optional and is never inferred from a request
+# body - the caller passes the value the access token was issued for.
+# =============================================================================
+
+_CASE_LIST_COLUMNS = (
+    "case_id", "status", "current_step", "institution_id", "error_message",
+    "created_at", "updated_at", "borrower_name", "case_reference",
+    "facility_type", "requested_amount", "created_by", "assigned_to",
+    "submitted_at", "reviewed_by", "reviewed_at", "decision", "risk_grade",
+    "analysis_status", "decision_allowed", "lifecycle_status", "appraisal_id",
+)
+
+
+def _execution_signals(result_data_raw):
+    """Pull the P0-4 gate signals out of a persisted result_data blob.
+
+    The loan_cases columns analysis_status / decision_allowed / decision are
+    written going forward, but every case that already exists carries these
+    values inside result_data. Reading them back recovers data that was
+    genuinely recorded - it does not guess. A row with neither source yields
+    empty values, and the lifecycle deriver treats that as "not yet known".
+    """
+    if not result_data_raw:
+        return {}
+    try:
+        payload = json.loads(result_data_raw)
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    combined = payload.get("combined_decision")
+    if not isinstance(combined, dict):
+        combined = {}
+    return {
+        "analysis_status": payload.get("analysis_status"),
+        "decision_allowed": payload.get("decision_allowed"),
+        "decision": combined.get("decision"),
+        "degraded_components": payload.get("degraded_components"),
+        "missing_required": payload.get("missing_required"),
+        "appraisal_id": payload.get("appraisal_id"),
+    }
+
+
+def _hydrate_case_row(row, columns):
+    """Turn a loan_cases row into an API-shaped dict with a lifecycle status."""
+    from app.core.case_status import derive_case_status
+
+    record = dict(zip(columns, row))
+    signals = _execution_signals(record.pop("_result_data", None))
+
+    # Persisted columns win; result_data fills in only what the columns lack,
+    # so a value written explicitly is never overwritten by an older snapshot.
+    for key in ("analysis_status", "decision", "appraisal_id"):
+        if record.get(key) in (None, "") and signals.get(key) is not None:
+            record[key] = signals[key]
+    if record.get("decision_allowed") is None and signals.get("decision_allowed") is not None:
+        record["decision_allowed"] = 1 if signals["decision_allowed"] else 0
+
+    if record.get("decision_allowed") is not None:
+        record["decision_allowed"] = bool(record["decision_allowed"])
+
+    record["degraded_components"] = signals.get("degraded_components") or []
+    record["missing_required"] = signals.get("missing_required") or []
+    record["lifecycle_status"] = derive_case_status(record).value
+    return record
+
+
+def list_cases(
+    tenant_id,
+    status=None,
+    assigned_to=None,
+    created_by=None,
+    search=None,
+    sort="created_at",
+    direction="desc",
+    limit=25,
+    offset=0,
+):
+    """List cases for one tenant.
+
+    Lifecycle status is derived per row rather than filtered in SQL, because it
+    is computed from several columns plus result_data. Filtering therefore
+    happens after hydration, and the reported total reflects the filtered set.
+    """
+    if not tenant_id:
+        raise ValueError("tenant_id is required for list_cases")
+
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+
+    sortable = {"created_at", "updated_at", "borrower_name", "requested_amount", "submitted_at"}
+    sort_col = sort if sort in sortable else "created_at"
+    sort_dir = "ASC" if str(direction).lower() == "asc" else "DESC"
+
+    where = ["institution_id = ?"]
+    params = [tenant_id]
+    if assigned_to:
+        where.append("assigned_to = ?")
+        params.append(assigned_to)
+    if created_by:
+        where.append("created_by = ?")
+        params.append(created_by)
+    if search:
+        where.append("(LOWER(COALESCE(borrower_name, '')) LIKE ? OR LOWER(case_id) LIKE ? "
+                     "OR LOWER(COALESCE(case_reference, '')) LIKE ?)")
+        needle = "%" + str(search).lower() + "%"
+        params.extend([needle, needle, needle])
+
+    where_sql = " AND ".join(where)
+    columns = _CASE_LIST_COLUMNS + ("_result_data",)
+    select_sql = ", ".join(_CASE_LIST_COLUMNS) + ", result_data"
+
+    conn = get_sqlite_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT " + select_sql + " FROM loan_cases WHERE " + where_sql
+            + " ORDER BY " + sort_col + " " + sort_dir,
+            params,
+        )
+        rows = [_hydrate_case_row(r, columns) for r in cursor.fetchall()]
+    finally:
+        conn.close()
+
+    if status:
+        wanted = {str(s).strip().upper() for s in status if str(s).strip()}
+        if wanted:
+            rows = [r for r in rows if r["lifecycle_status"] in wanted]
+
+    total = len(rows)
+    page = rows[offset:offset + limit]
+    return {
+        "items": page,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "returned": len(page),
+    }
+
+
+def get_case_detail(case_id, tenant_id):
+    """One case, tenant-scoped, with its lifecycle status and full result_data."""
+    if not tenant_id:
+        raise ValueError("tenant_id is required for get_case_detail")
+
+    columns = _CASE_LIST_COLUMNS + ("_result_data",)
+    select_sql = ", ".join(_CASE_LIST_COLUMNS) + ", result_data"
+
+    conn = get_sqlite_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT " + select_sql + ", input_data, result_data FROM loan_cases "
+            "WHERE case_id = ? AND institution_id = ?",
+            (case_id, tenant_id),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        base = _hydrate_case_row(row[:len(columns)], columns)
+        raw_input, raw_result = row[-2], row[-1]
+    finally:
+        conn.close()
+
+    try:
+        base["input_data"] = json.loads(raw_input) if raw_input else {}
+    except (ValueError, TypeError):
+        base["input_data"] = {}
+    try:
+        base["result_data"] = json.loads(raw_result) if raw_result else {}
+    except (ValueError, TypeError):
+        base["result_data"] = {}
+    return base
+
+
+def get_case_appraisal(case_id, tenant_id):
+    """The appraisal record produced by a case, if one has been linked.
+
+    Returns None when no appraisal is linked yet - the honest answer for a case
+    that has not completed, and for historical cases written before
+    appraisal_records.case_id existed.
+    """
+    conn = get_sqlite_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT id, decision, decision_rationale, adjusted_score, base_score,
+                      cam_report, financial_ratios, analysis_status, decision_allowed,
+                      degraded_components, model_provider, model_name, model_version,
+                      prompt_version, agent_version, agent_provenance,
+                      provenance_recorded_at, created_at
+               FROM appraisal_records
+               WHERE case_id = ? AND institution_id = ?
+               ORDER BY created_at DESC LIMIT 1""",
+            (case_id, tenant_id),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        columns = [c[0] for c in cursor.description]
+    finally:
+        conn.close()
+
+    record = dict(zip(columns, row))
+    for field in ("cam_report", "financial_ratios", "degraded_components", "agent_provenance"):
+        if record.get(field):
+            try:
+                record[field] = json.loads(record[field])
+            except (ValueError, TypeError):
+                pass
+    if record.get("decision_allowed") is not None:
+        record["decision_allowed"] = bool(record["decision_allowed"])
+    return record
+
+
+def list_case_documents(case_id, tenant_id):
+    """Documents attached to a case, tenant-scoped.
+
+    storage_path is deliberately not selected: it is an internal object handle
+    and has no business reaching a browser.
+    """
+    conn = get_sqlite_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT id, case_id, filename, doc_type, page_count, size_bytes,
+                      status, error_code, uploaded_by, created_at, updated_at
+               FROM case_documents
+               WHERE case_id = ? AND tenant_id = ?
+               ORDER BY created_at ASC""",
+            (case_id, tenant_id),
+        )
+        columns = [c[0] for c in cursor.description]
+        return [dict(zip(columns, r)) for r in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def list_audit_events(
+    tenant_id,
+    case_id=None,
+    user_id=None,
+    action=None,
+    resource_type=None,
+    date_from=None,
+    date_to=None,
+    limit=50,
+    offset=0,
+):
+    """Read the audit chain for one tenant.
+
+    This is a read path only. The chain remains append-only - the SQLite
+    triggers that refuse UPDATE and DELETE on audit_logs are untouched, and
+    nothing here writes.
+    """
+    if not tenant_id:
+        raise ValueError("tenant_id is required for list_audit_events")
+
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+
+    where = ["tenant_id = ?"]
+    params = [tenant_id]
+    for column, value in (
+        ("case_id", case_id),
+        ("user_id", user_id),
+        ("action", action),
+        ("resource_type", resource_type),
+    ):
+        if value:
+            where.append(column + " = ?")
+            params.append(value)
+    if date_from:
+        where.append("timestamp >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("timestamp <= ?")
+        params.append(date_to)
+
+    where_sql = " AND ".join(where)
+
+    conn = get_sqlite_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM audit_logs WHERE " + where_sql, params)
+        total = cursor.fetchone()[0]
+
+        cursor.execute(
+            """SELECT id, tenant_id, user_id, case_id, action, resource_type,
+                      resource_id, previous_state, new_state, decision, reason,
+                      sequence_number, previous_hash, current_hash, timestamp
+               FROM audit_logs WHERE """ + where_sql
+            + " ORDER BY sequence_number DESC LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        )
+        columns = [c[0] for c in cursor.description]
+        items = []
+        for row in cursor.fetchall():
+            record = dict(zip(columns, row))
+            for field in ("previous_state", "new_state"):
+                if record.get(field):
+                    try:
+                        record[field] = json.loads(record[field])
+                    except (ValueError, TypeError):
+                        pass
+            items.append(record)
+    finally:
+        conn.close()
+
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "returned": len(items),
+    }
+
+
+def link_case_appraisal(
+    case_id,
+    appraisal_id,
+    analysis_status=None,
+    decision_allowed=None,
+    decision=None,
+    borrower_name=None,
+):
+    """Record which appraisal a case produced, plus the P0-4 gate outcome.
+
+    Called once an appraisal has been persisted. Only values that were actually
+    supplied are written - a None argument leaves the existing column untouched
+    rather than blanking it, so a partial call cannot erase a recorded result.
+
+    Failure here is logged and swallowed: the appraisal itself is already
+    durable, and losing the convenience link must not fail an otherwise
+    successful run. The link can be recovered from appraisal_records.case_id.
+    """
+    if not case_id or not appraisal_id:
+        return False
+
+    assignments = ["appraisal_id = ?"]
+    params = [appraisal_id]
+    for column, value in (
+        ("analysis_status", analysis_status),
+        ("decision", decision),
+        ("borrower_name", borrower_name),
+    ):
+        if value is not None:
+            assignments.append(column + " = ?")
+            params.append(value)
+    if decision_allowed is not None:
+        assignments.append("decision_allowed = ?")
+        params.append(1 if decision_allowed else 0)
+
+    assignments.append("updated_at = ?")
+    params.append(datetime.now(timezone.utc).isoformat())
+    params.append(case_id)
+
+    try:
+        conn = get_sqlite_connection()
+        try:
+            conn.execute(
+                "UPDATE loan_cases SET " + ", ".join(assignments) + " WHERE case_id = ?",
+                params,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+    except Exception as e:
+        print(f"[ERROR] link_case_appraisal failed for case_id={case_id}: {type(e).__name__}")
+        return False
+
 
 init_db()

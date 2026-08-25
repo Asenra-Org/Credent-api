@@ -199,7 +199,7 @@ async def resume_appraisal_job(case_id: str) -> dict:
 
 def _persist_appraisal(appraisal_result: dict, case_id: str, institution_id: str, coordinator=None) -> None:
     """Extract relevant fields from the coordinator output and persist to database."""
-    from app.database.database import save_appraisal
+    from app.database.database import save_appraisal, link_case_appraisal
     from app.core.appraisal_safety import apply_safety_gate, persistence_fields
 
     try:
@@ -222,7 +222,7 @@ def _persist_appraisal(appraisal_result: dict, case_id: str, institution_id: str
             coordinator=coordinator,
         )
 
-        save_appraisal({
+        appraisal_id = save_appraisal({
             "company_id": f"COMP_{case_id[:8]}",
             "company_name": ingestion_data.get("company_name", "Unknown Entity"),
             "sector": sector_data.get("sector", "N/A"),
@@ -243,8 +243,23 @@ def _persist_appraisal(appraisal_result: dict, case_id: str, institution_id: str
             "promoter_analysis": management_data.get("promoter_analysis", []),
             "governance_assessment": management_data.get("governance_assessment", {}),
             "institution_id": institution_id,
+            "case_id": case_id,
             **persistence_fields(_exec_summary, _prov_summary, _ledger),
         })
+
+        # Link the case to the appraisal it produced, so the case workspace can
+        # reach its own CAM and the queue can show the gate outcome without
+        # re-parsing the result blob. Never invents a borrower name: the
+        # extracted value is written only when ingestion actually produced one.
+        _borrower = ingestion_data.get("company_name")
+        link_case_appraisal(
+            case_id=case_id,
+            appraisal_id=appraisal_id,
+            analysis_status=_exec_summary.get("analysis_status"),
+            decision_allowed=_exec_summary.get("decision_allowed"),
+            decision=appraisal_result.get("combined_decision", {}).get("decision"),
+            borrower_name=_borrower if _borrower and _borrower != "Unknown Entity" else None,
+        )
     except Exception as e:
         logger.error(f"[Worker] Persistence error for case_id={case_id}: {e}", exc_info=True)
 

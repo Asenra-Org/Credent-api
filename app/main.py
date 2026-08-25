@@ -76,7 +76,7 @@ async def lifespan(app: FastAPI):
     yield
 
 # Import API routers AFTER loading the .env
-from app.routes import documents, analysis, research, reports, history, structured_data, policies, auth, admin
+from app.routes import documents, analysis, research, reports, history, structured_data, policies, auth, admin, cases, audit, platform
 
 app = FastAPI(
     title="Credent API",
@@ -183,3 +183,6 @@ app.include_router(structured_data.router, prefix="/api/v1/data", tags=["Structu
 app.include_router(policies.router, prefix="/api/v1", tags=["Policies"])
 app.include_router(auth.router)
 app.include_router(admin.router)
+app.include_router(cases.router)
+app.include_router(audit.router)
+app.include_router(platform.router)

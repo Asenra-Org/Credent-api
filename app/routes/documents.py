@@ -175,7 +175,7 @@ MAX_FILE_SIZE = 20 * 1024 * 1024
 
 
 from app.agents.orchestration.coordinator import AgentCoordinator
-from app.database.database import save_appraisal, get_case
+from app.database.database import save_appraisal, get_case, link_case_appraisal
 
 from app.security.dependencies import require_role, get_current_tenant
 from fastapi import Depends
@@ -282,6 +282,12 @@ async def ingest_pdf_document(
             # identical rules. See app/core/appraisal_safety.py.
             # ---------------------------------------------------------------
             _injection = bool(isinstance(security_warnings, dict) and security_warnings.get("prompt_injection"))
+
+            # The coordinator generates a case_id when the caller supplies none,
+            # and reports it back here. Without this the single-file upload path
+            # loses the link between the case and the appraisal it produced.
+            _effective_case_id = case_id or appraisal_result.get("case_id")
+
             _exec_summary, _prov_summary, _ledger = apply_safety_gate(
                 appraisal_result,
                 ingestion_agent=agent,
@@ -289,9 +295,18 @@ async def ingest_pdf_document(
                 security_blocked=_injection,
             )
 
+            # Persist the gated result over the coordinator's pre-gate snapshot so
+            # the stored record carries the P0-4 outcome.
+            if _effective_case_id:
+                try:
+                    from app.database.database import update_case_result
+                    update_case_result(_effective_case_id, appraisal_result, status="COMPLETED")
+                except Exception as _snap_err:
+                    print(f"[ROUTE /ingest/pdf] Gated snapshot persist failed: {type(_snap_err).__name__}")
+
             # 3. Save appraisal results to Supabase (Primary) and SQLite (Fallback)
             try:
-                save_appraisal({
+                _appraisal_id = save_appraisal({
                     "company_id": f"COMP_{int(datetime.now().timestamp())}",
                     "company_name": ingestion_data.get("company_name", "Unknown Entity"),
                     "sector": appraisal_result.get("individual_agent_outputs", {}).get("sector_context", {}).get("sector", "N/A"),
@@ -312,8 +327,23 @@ async def ingest_pdf_document(
                     "promoter_analysis": appraisal_result.get("individual_agent_outputs", {}).get("management_quality", {}).get("promoter_analysis", []),
                     "governance_assessment": appraisal_result.get("individual_agent_outputs", {}).get("management_quality", {}).get("governance_assessment", {}),
                     "institution_id": institution_id,
+                    "case_id": _effective_case_id,
                     **persistence_fields(_exec_summary, _prov_summary, _ledger),
                 })
+
+                # Link the case to its appraisal when this upload was made
+                # against an existing case. A one-off upload with no case_id
+                # has nothing to link, and none is invented.
+                if _effective_case_id:
+                    _borrower = ingestion_data.get("company_name")
+                    link_case_appraisal(
+                        case_id=_effective_case_id,
+                        appraisal_id=_appraisal_id,
+                        analysis_status=_exec_summary.get("analysis_status"),
+                        decision_allowed=_exec_summary.get("decision_allowed"),
+                        decision=appraisal_result.get("combined_decision", {}).get("decision"),
+                        borrower_name=_borrower if _borrower and _borrower != "Unknown Entity" else None,
+                    )
             except Exception as save_err:
                 print(f"[ROUTE /ingest/pdf] Persistence error: {save_err}")
 

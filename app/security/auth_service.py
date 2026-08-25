@@ -173,11 +173,16 @@ def handle_successful_login(user_id: str):
     conn = get_auth_connection()
     try:
         cursor = conn.cursor()
+        # last_login_at is recorded here so the platform user console can show
+        # genuine account activity rather than leaving the column permanently
+        # NULL. It is written on the same statement that clears the lockout
+        # counters, so a successful login is recorded atomically.
         cursor.execute("""
             UPDATE users 
-            SET failed_login_count = 0, is_locked = 0, lockout_until = NULL
+            SET failed_login_count = 0, is_locked = 0, lockout_until = NULL,
+                last_login_at = ?
             WHERE id = ?
-        """, (user_id,))
+        """, (datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S'), user_id))
         conn.commit()
     finally:
         conn.close()

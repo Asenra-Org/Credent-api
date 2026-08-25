@@ -73,7 +73,7 @@ def _backoff_seconds(attempt: int) -> float:
 def _model_chain() -> List[str]:
     """Primary model first, then any configured fallbacks, de-duplicated."""
     chain = [
-        os.getenv("PRIMARY_LLM_MODEL", "llama-3.1-8b-instant"),
+        os.getenv("PRIMARY_LLM_MODEL", GROQ_DEFAULT_MODEL),
         os.getenv("FALLBACK_LLM_MODEL_1", ""),
         os.getenv("FALLBACK_LLM_MODEL_2", ""),
     ]
@@ -177,6 +177,60 @@ class ResilientChatGroq(ChatGroq):
         raise last_exc
 
 
+# Sarvam connection facts. Declared at module level so callers that need to
+# report which provider is actually live (the platform operations console) read
+# the same values this factory uses, instead of duplicating them.
+SARVAM_BASE_URL = "https://api.sarvam.ai/v1"
+SARVAM_MODEL = "sarvam-105b"
+
+# Default when no PRIMARY_LLM_MODEL is configured on the Groq path. Kept here so
+# it is stated once.
+GROQ_DEFAULT_MODEL = "llama-3.1-8b-instant"
+
+
+def active_provider() -> dict:
+    """Which provider an agent constructed right now would actually use.
+
+    This mirrors the precedence in ``ChatGroqWithFallback.__new__`` exactly:
+    a configured SARVAM_API_KEY overrides the Groq path entirely, including the
+    PRIMARY_LLM_MODEL / FALLBACK_LLM_MODEL_* chain and the ResilientChatGroq
+    retry-and-rollover wrapper.
+
+    Returns a description only. No key value is read or returned.
+    """
+    if os.getenv("SARVAM_API_KEY"):
+        return {
+            "provider": "sarvam",
+            "endpoint": SARVAM_BASE_URL,
+            "primary_model": SARVAM_MODEL,
+            "fallback_models": [],
+            # The Sarvam branch returns a plain ChatOpenAI. The model-rollover
+            # chain in ResilientChatGroq is not applied on this path; the SDK's
+            # own max_retries=3 is the only retry behaviour.
+            "model_failover_active": False,
+            "sdk_retries": 3,
+            "max_tokens": os.getenv("LLM_MAX_TOKENS") or "4000",
+            "note": (
+                "SARVAM_API_KEY is set, which takes precedence over the Groq path. "
+                "PRIMARY_LLM_MODEL and FALLBACK_LLM_MODEL_* are not read while it "
+                "is configured, and model rollover is inactive on this path."
+            ),
+        }
+
+    chain = _model_chain()
+    primary = chain[0] if chain else GROQ_DEFAULT_MODEL
+    return {
+        "provider": "groq" if os.getenv("GROQ_API_KEY") else None,
+        "endpoint": None,
+        "primary_model": primary,
+        "fallback_models": [m for m in chain if m != primary],
+        "model_failover_active": True,
+        "sdk_retries": None,
+        "max_tokens": os.getenv("LLM_MAX_TOKENS") or None,
+        "note": None,
+    }
+
+
 class ChatGroqWithFallback:
     """Factory preserved for backwards compatibility with existing agent imports."""
 
@@ -195,9 +249,9 @@ class ChatGroqWithFallback:
                 
             kwargs.pop("api_key", None)
             return ChatOpenAI(
-                base_url="https://api.sarvam.ai/v1",
+                base_url=SARVAM_BASE_URL,
                 api_key=sarvam_api_key,
-                model="sarvam-105b",
+                model=SARVAM_MODEL,
                 temperature=kwargs.get("temperature", 0.1),
                 max_tokens=None, # Prevents LangChain from sending max_completion_tokens
                 model_kwargs={"extra_body": {"max_tokens": max_tokens}},

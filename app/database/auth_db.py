@@ -198,9 +198,13 @@ POSTGRES_AUTH_DDL = (
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         auth_provider TEXT DEFAULT 'local',
         mfa_secret TEXT,
-        mfa_enabled INTEGER DEFAULT 0
+        mfa_enabled INTEGER DEFAULT 0,
+        last_login_at TIMESTAMP
     )
     """,
+    # Existing Postgres deployments predate last_login_at; add it separately so
+    # the CREATE TABLE above stays a no-op on an already-provisioned database.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP",
     """
     CREATE TABLE IF NOT EXISTS organizations (
         id TEXT PRIMARY KEY,
