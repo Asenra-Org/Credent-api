@@ -29,6 +29,7 @@ Run with:
     pytest tests/test_source_traceability.py -v
 """
 import pytest
+from conftest import patch_agent_llm
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 from app.agents.input.document_ingestion import (
@@ -213,7 +214,7 @@ class TestCitationExtraction:
     @pytest.mark.asyncio
     async def test_revenue_citation_extracted(self, agent):
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
+        with patch_agent_llm(agent) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "X Corp", "sector": "Tech",
@@ -234,7 +235,7 @@ class TestCitationExtraction:
     @pytest.mark.asyncio
     async def test_debt_citation_extracted(self, agent):
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
+        with patch_agent_llm(agent) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "X Corp", "sector": "Tech",
@@ -256,7 +257,7 @@ class TestCitationExtraction:
     @pytest.mark.asyncio
     async def test_equity_citation_extracted(self, agent):
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
+        with patch_agent_llm(agent) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "X Corp", "sector": "Tech",
@@ -277,7 +278,7 @@ class TestCitationExtraction:
     @pytest.mark.asyncio
     async def test_all_three_citations_extracted(self, agent):
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
+        with patch_agent_llm(agent) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "FullCorp", "sector": "Steel",
@@ -301,7 +302,7 @@ class TestCitationExtraction:
     async def test_string_page_number_coerced_to_int(self, agent):
         """LLM returns page as string — must be coerced to int."""
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
+        with patch_agent_llm(agent) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "Corp", "sector": "Tech",
@@ -323,7 +324,7 @@ class TestCitationExtraction:
     async def test_missing_revenue_citation_is_none(self, agent):
         """When revenue is absent, its citation must be None."""
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
+        with patch_agent_llm(agent) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "Corp", "sector": "Tech",
@@ -342,7 +343,7 @@ class TestCitationExtraction:
     async def test_all_citations_null_in_response(self, agent):
         """If LLM returns null citations entirely, all keys default to None."""
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
+        with patch_agent_llm(agent) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "Corp", "sector": "Tech",
@@ -361,7 +362,7 @@ class TestCitationExtraction:
     async def test_citations_key_always_present_in_result(self, agent):
         """citations key must be present regardless of LLM response content."""
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
+        with patch_agent_llm(agent) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "Corp", "sector": "Tech",
@@ -376,7 +377,7 @@ class TestCitationExtraction:
     async def test_backward_compat_alias_keys_synchronized(self, agent):
         """revenue and total_revenue must point to the same citation object."""
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
+        with patch_agent_llm(agent) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "Corp", "sector": "Tech",
@@ -400,7 +401,7 @@ class TestCitationExtraction:
     async def test_invalid_page_value_in_citation(self, agent):
         """Non-numeric page value must be coerced to None — system must not crash."""
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
+        with patch_agent_llm(agent) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "Corp", "sector": "Tech",
@@ -423,7 +424,7 @@ class TestCitationExtraction:
     async def test_all_llm_attempts_fail_returns_default_citations(self, agent):
         """When all three LLM attempts fail, DEFAULT_EXTRACTION with null citations returned."""
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke", side_effect=Exception("LLM down")):
+        with patch_agent_llm(agent, side_effect=Exception("LLM down")):
             res = await agent.parse_financial_statement("revenue debt balance sheet")
         assert "citations" in res
         assert res["citations"]["revenue"] is None
@@ -432,7 +433,7 @@ class TestCitationExtraction:
     async def test_existing_fields_unchanged_after_citations_added(self, agent):
         """Existing fields (company_name, base_score, etc.) must remain intact."""
         agent.structured_llm = None
-        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as m:
+        with patch_agent_llm(agent) as m:
             m.return_value = self._make_mock_response("""
             {
                 "company_name": "Asenra Ltd", "sector": "Fintech",

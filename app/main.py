@@ -165,8 +165,8 @@ async def health_check():
 async def readiness_check():
     """Readiness check verifying local SQLite connection."""
     try:
-        from app.database.database import get_sqlite_connection
-        conn = get_sqlite_connection()
+        from app.database.database import get_app_connection
+        conn = get_app_connection()
         conn.close()
         return {"status": "ready", "database": "online"}
     except Exception as e:

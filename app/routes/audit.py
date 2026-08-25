@@ -20,7 +20,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.database.database import get_sqlite_connection, list_audit_events
+from app.database.database import get_app_connection, list_audit_events
 from app.security.audit_service import verify_tenant_chain
 from app.security.dependencies import get_current_tenant, get_current_user_and_session, require_role
 from app.security.rate_limit_dependency import rate_limit
@@ -103,7 +103,7 @@ async def verify_audit_chain(
     """
     scope = _resolve_scope(role, tenant_id, organization_id)
 
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         result = verify_tenant_chain(conn, scope)
     finally:

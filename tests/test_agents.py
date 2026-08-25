@@ -12,6 +12,7 @@ Run with:
 """
 
 import pytest
+from conftest import patch_agent_llm
 from app.agents.analysis.financial_health import (
     FinancialHealthAgent,
     DSCR_SAFE_THRESHOLD,
@@ -152,7 +153,7 @@ class TestManagementQualityDeterministicScoring:
         mock_response = MagicMock()
         mock_response.content = json.dumps(mock_json)
 
-        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as mock_ainvoke:
+        with patch_agent_llm(management_agent) as mock_ainvoke:
             mock_ainvoke.return_value = mock_response
             return await management_agent.analyze({"company_name": "Test Co", "promoter_ids": ["p1"]})
 
@@ -251,7 +252,7 @@ class TestManagementQualityDeterministicScoring:
     async def test_llm_parsing_failure_triggers_manual_review(self, management_agent):
         mock_response = MagicMock()
         mock_response.content = "not json"
-        with patch("langchain_groq.ChatGroq.ainvoke", new_callable=AsyncMock) as mock_ainvoke:
+        with patch_agent_llm(management_agent) as mock_ainvoke:
             mock_ainvoke.return_value = mock_response
             result = await management_agent.analyze({"company_name": "Test Co", "promoter_ids": ["p1"]})
 
