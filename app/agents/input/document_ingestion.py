@@ -5,6 +5,7 @@
 # Unauthorized use, reproduction, or distribution is strictly prohibited.
 # =============================================================================
 import tabula
+import asyncio
 import os
 import json
 import re
@@ -460,6 +461,22 @@ class DocumentIngestionAgent:
             self.structured_llm = None
 
     async def ingest_pdf(self, file_path: str) -> dict:
+        """Extract text, tables and security signals from a PDF.
+
+        The body of this work - PyMuPDF, pdf2image, pytesseract OCR and tabula -
+        is CPU and subprocess bound, and none of it awaits. Running it directly
+        on the event loop blocked the single uvicorn worker for the whole
+        extraction, so nothing else could be served: status polls stalled and,
+        critically, POST /auth/refresh timed out. The frontend read that timeout
+        as an expired session and ejected the analyst mid-appraisal.
+
+        It runs in a worker thread instead. The extraction logic is unchanged -
+        _ingest_pdf_sync is the original body verbatim - so results are
+        identical; only the thread it runs on differs.
+        """
+        return await asyncio.to_thread(self._ingest_pdf_sync, file_path)
+
+    def _ingest_pdf_sync(self, file_path: str) -> dict:
         """HYBRID EXTRACTION: Tries standard text first, falls back to OCR for messy/scanned PDFs.
 
         Pipeline (in order):

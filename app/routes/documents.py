@@ -4,6 +4,7 @@
 # Copyright (c) 2026 Asenra. All rights reserved.
 # Unauthorized use, reproduction, or distribution is strictly prohibited.
 # =============================================================================
+import asyncio
 import os
 import shutil
 import uuid
@@ -224,7 +225,10 @@ async def ingest_pdf_document(
             buffer.write(content)
 
         # 0. ASE-55 Security Scan (Gate 1)
-        security_scan = DocumentSecurityAgent.scan_file(temp_file_path)
+        # Offloaded: scan_file reads and parses the whole file synchronously.
+        # On the event loop it blocks every other request, including
+        # /auth/refresh, which the frontend then reads as a dead session.
+        security_scan = await asyncio.to_thread(DocumentSecurityAgent.scan_file, temp_file_path)
         if not security_scan.is_safe:
             raise HTTPException(
                 status_code=422,
@@ -233,7 +237,9 @@ async def ingest_pdf_document(
         security_warnings = security_scan.warnings
 
         # 1. Run Integrity Scan (Forensics)
-        forensics = run_pdf_forensics(temp_file_path)
+        # Offloaded for the same reason: pikepdf/PyMuPDF metadata inspection is
+        # blocking and can take seconds on a large dossier.
+        forensics = await asyncio.to_thread(run_pdf_forensics, temp_file_path)
 
         # 2. Trigger Full Orchestrator Multi-Agent Appraisal Pipeline (ASE-54: stateful)
         coordinator = AgentCoordinator(ingestion_agent=agent)
