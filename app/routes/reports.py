@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from fastapi import Depends
 from app.security.dependencies import require_role, get_current_tenant, get_current_user_and_session
 from app.security.audit_service import create_audit_event
-from app.database.database import get_app_connection
+from app.database.database import get_sqlite_connection
 import os
 
 router = APIRouter()
@@ -86,7 +86,7 @@ async def update_loan_status(
     """Formally Approve or Reject a loan in Supabase (Primary) and SQLite (Fallback)."""
     user_id = user_ctx["user_id"]
 
-    conn = get_app_connection()
+    conn = get_sqlite_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
 

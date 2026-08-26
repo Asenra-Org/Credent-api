@@ -89,14 +89,14 @@ async def update_institution_policy(
         "penalty_weights": request.penalty_weights
     }
 
-    from app.database.database import get_app_connection, get_policy
+    from app.database.database import get_sqlite_connection, get_policy
     from app.security.audit_service import create_audit_event
     import json
 
     # Get previous state for audit log
     previous_state = get_policy(institution_id)
 
-    conn = get_app_connection()
+    conn = get_sqlite_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
