@@ -45,9 +45,409 @@ def get_sqlite_connection(timeout: float = 30.0) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 30000;")
     return conn
 
+# =============================================================================
+# [P0-5] Persistent application store.
+#
+# The identity layer already solved this problem in app/database/auth_db.py:
+# one connection factory that returns Postgres when a DSN is configured and
+# SQLite otherwise, with the handful of dialect differences translated. The
+# appraisal/case tables had no such path, so every case-tracking call opened
+# SQLite - which the P0-5 guard refuses in production. That is why production
+# startup crashed, and why the guard was (wrongly) disabled to stop the crash.
+#
+# This reuses the identity layer's translation machinery rather than inventing
+# a second one, so the two cannot drift.
+# =============================================================================
+
+def app_database_url():
+    """Postgres DSN for the application store, if one is configured.
+
+    Deliberately the same resolver the identity store uses. Running the case
+    tables and the identity tables on one Postgres instance keeps a case and the
+    user who acted on it in the same database, which matters for audit.
+    """
+    from app.database.auth_db import auth_database_url
+
+    return auth_database_url()
+
+
+def uses_postgres_app() -> bool:
+    return app_database_url() is not None
+
+
+def get_app_connection(timeout: float = 30.0):
+    """Connection to the application store (cases, appraisals, audit).
+
+    Postgres when a DSN is configured; SQLite otherwise. The SQLite branch goes
+    through the P0-5 guard, so in production an unconfigured deployment fails
+    closed here rather than silently writing to ephemeral storage.
+
+    Every existing caller passes SQLite-flavoured SQL. The returned Postgres
+    connection translates it, so call sites did not have to be rewritten.
+    """
+    url = app_database_url()
+    if url:
+        import psycopg2
+
+        from app.database.auth_db import _PgConnection
+
+        conn = psycopg2.connect(url, connect_timeout=int(timeout))
+        conn.autocommit = False
+        return _PgConnection(conn)
+
+    return get_sqlite_connection(timeout=timeout)
+
+
+# Postgres DDL mirroring the SQLite application schema. Types are chosen so the
+# existing Python needs no changes: integer flags stay integers, ids stay text,
+# and JSON payloads stay TEXT because the code json.dumps/loads them itself.
+POSTGRES_APP_DDL = (
+    """
+    CREATE TABLE IF NOT EXISTS companies (
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        sector TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS appraisal_records (
+        id TEXT PRIMARY KEY,
+        company_id TEXT,
+        revenue DOUBLE PRECISION,
+        debt DOUBLE PRECISION,
+        base_score INTEGER,
+        adjusted_score INTEGER,
+        decision TEXT,
+        recommended_loan_amount TEXT,
+        recommended_interest_rate TEXT,
+        decision_rationale TEXT,
+        raw_document_data TEXT,
+        integrity_flags TEXT,
+        web_research TEXT,
+        cam_report TEXT,
+        financial_ratios TEXT,
+        management_score DOUBLE PRECISION DEFAULT 0.0,
+        promoter_analysis TEXT DEFAULT '[]',
+        governance_assessment TEXT DEFAULT '{}',
+        institution_id TEXT DEFAULT 'DEFAULT',
+        override_reason TEXT,
+        is_override INTEGER DEFAULT 0,
+        case_id TEXT,
+        model_provider TEXT,
+        model_name TEXT,
+        model_version TEXT,
+        prompt_version TEXT,
+        agent_version TEXT,
+        temperature DOUBLE PRECISION,
+        provider_request_id TEXT,
+        agent_provenance TEXT,
+        analysis_status TEXT,
+        degraded_components TEXT,
+        decision_allowed INTEGER,
+        provenance_recorded_at TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS loan_cases (
+        case_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        current_step TEXT DEFAULT 'init',
+        has_financials INTEGER DEFAULT 1,
+        has_promoters INTEGER DEFAULT 1,
+        institution_id TEXT DEFAULT 'DEFAULT',
+        input_data TEXT DEFAULT '{}',
+        result_data TEXT DEFAULT '{}',
+        error_message TEXT,
+        borrower_name TEXT,
+        case_reference TEXT,
+        facility_type TEXT,
+        requested_amount DOUBLE PRECISION,
+        created_by TEXT,
+        assigned_to TEXT,
+        submitted_at TEXT,
+        reviewed_by TEXT,
+        reviewed_at TEXT,
+        decision TEXT,
+        risk_grade TEXT,
+        analysis_status TEXT,
+        decision_allowed INTEGER,
+        lifecycle_status TEXT,
+        appraisal_id TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS case_documents (
+        id TEXT PRIMARY KEY,
+        case_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        doc_type TEXT,
+        storage_path TEXT,
+        page_count INTEGER,
+        size_bytes INTEGER,
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        error_code TEXT,
+        uploaded_by TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS case_reviews (
+        id TEXT PRIMARY KEY,
+        case_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        note TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS institution_policies (
+        institution_id TEXT PRIMARY KEY,
+        current_ratio_safe DOUBLE PRECISION,
+        current_ratio_min DOUBLE PRECISION,
+        dscr_safe DOUBLE PRECISION,
+        dscr_min DOUBLE PRECISION,
+        de_high DOUBLE PRECISION,
+        auto_approve_cutoff DOUBLE PRECISION,
+        auto_reject_cutoff DOUBLE PRECISION,
+        penalty_weights TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS audit_logs (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        case_id TEXT,
+        action TEXT NOT NULL,
+        resource_type TEXT,
+        resource_id TEXT,
+        previous_state TEXT,
+        new_state TEXT,
+        decision TEXT,
+        reason TEXT,
+        sequence_number INTEGER NOT NULL,
+        previous_hash TEXT NOT NULL,
+        current_hash TEXT NOT NULL,
+        -- TEXT, not TIMESTAMP: this exact string is part of the HMAC payload.
+        -- A real TIMESTAMP round-trips as a datetime whose str() differs, which
+        -- makes verify_tenant_chain report a false tamper.
+        timestamp TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS audit_chain_heads (
+        tenant_id TEXT PRIMARY KEY,
+        latest_sequence INTEGER NOT NULL DEFAULT 0,
+        latest_hash TEXT NOT NULL,
+        updated_at TEXT
+    )
+    """,
+)
+
+# The SQLite schema makes audit_logs append-only with BEFORE UPDATE/DELETE
+# triggers. Postgres needs the equivalent, or the hash chain would be
+# tamper-evident in development and merely tamper-*detectable* in production.
+POSTGRES_AUDIT_APPEND_ONLY = (
+    """
+    CREATE OR REPLACE FUNCTION cresem_audit_logs_append_only()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        RAISE EXCEPTION 'audit_logs are append-only';
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS prevent_audit_logs_update ON audit_logs",
+    """
+    CREATE TRIGGER prevent_audit_logs_update
+        BEFORE UPDATE ON audit_logs
+        FOR EACH ROW EXECUTE FUNCTION cresem_audit_logs_append_only()
+    """,
+    "DROP TRIGGER IF EXISTS prevent_audit_logs_delete ON audit_logs",
+    """
+    CREATE TRIGGER prevent_audit_logs_delete
+        BEFORE DELETE ON audit_logs
+        FOR EACH ROW EXECUTE FUNCTION cresem_audit_logs_append_only()
+    """,
+)
+
+
+# Columns each table must have, applied with ALTER TABLE ... ADD COLUMN IF NOT
+# EXISTS after the CREATE TABLE statements.
+#
+# This exists because CREATE TABLE IF NOT EXISTS is a no-op against a table that
+# already exists with a DIFFERENT shape. Production Supabase already had an
+# audit_logs table with no tenant_id, so the create was skipped and the index on
+# tenant_id then failed with UndefinedColumn - taking the application down at
+# import time.
+#
+# Every column is added nullable and without a default, so adding one to a table
+# holding rows can never fail and never rewrites data.
+POSTGRES_APP_COLUMNS = {
+    "audit_logs": [
+        ("tenant_id", "TEXT"), ("user_id", "TEXT"), ("case_id", "TEXT"),
+        ("action", "TEXT"), ("resource_type", "TEXT"), ("resource_id", "TEXT"),
+        ("previous_state", "TEXT"), ("new_state", "TEXT"), ("decision", "TEXT"),
+        ("reason", "TEXT"), ("sequence_number", "INTEGER"),
+        ("previous_hash", "TEXT"), ("current_hash", "TEXT"),
+        ("timestamp", "TEXT"),
+    ],
+    "audit_chain_heads": [
+        ("tenant_id", "TEXT"), ("latest_sequence", "INTEGER"),
+        ("latest_hash", "TEXT"), ("updated_at", "TEXT"),
+    ],
+    "loan_cases": [
+        ("status", "TEXT"), ("current_step", "TEXT"), ("has_financials", "INTEGER"),
+        ("has_promoters", "INTEGER"), ("institution_id", "TEXT"),
+        ("input_data", "TEXT"), ("result_data", "TEXT"), ("error_message", "TEXT"),
+        ("borrower_name", "TEXT"), ("case_reference", "TEXT"),
+        ("facility_type", "TEXT"), ("requested_amount", "DOUBLE PRECISION"),
+        ("created_by", "TEXT"), ("assigned_to", "TEXT"), ("submitted_at", "TEXT"),
+        ("reviewed_by", "TEXT"), ("reviewed_at", "TEXT"), ("decision", "TEXT"),
+        ("risk_grade", "TEXT"), ("analysis_status", "TEXT"),
+        ("decision_allowed", "INTEGER"), ("lifecycle_status", "TEXT"),
+        ("appraisal_id", "TEXT"), ("created_at", "TEXT"), ("updated_at", "TEXT"),
+    ],
+    "appraisal_records": [
+        ("company_id", "TEXT"), ("revenue", "DOUBLE PRECISION"), ("debt", "DOUBLE PRECISION"),
+        ("base_score", "INTEGER"), ("adjusted_score", "INTEGER"), ("decision", "TEXT"),
+        ("recommended_loan_amount", "TEXT"), ("recommended_interest_rate", "TEXT"),
+        ("decision_rationale", "TEXT"), ("raw_document_data", "TEXT"),
+        ("integrity_flags", "TEXT"), ("web_research", "TEXT"), ("cam_report", "TEXT"),
+        ("financial_ratios", "TEXT"), ("management_score", "DOUBLE PRECISION"),
+        ("promoter_analysis", "TEXT"), ("governance_assessment", "TEXT"),
+        ("institution_id", "TEXT"), ("override_reason", "TEXT"),
+        ("is_override", "INTEGER"), ("case_id", "TEXT"), ("model_provider", "TEXT"),
+        ("model_name", "TEXT"), ("model_version", "TEXT"), ("prompt_version", "TEXT"),
+        ("agent_version", "TEXT"), ("temperature", "DOUBLE PRECISION"),
+        ("provider_request_id", "TEXT"), ("agent_provenance", "TEXT"),
+        ("analysis_status", "TEXT"), ("degraded_components", "TEXT"),
+        ("decision_allowed", "INTEGER"), ("provenance_recorded_at", "TEXT"),
+        ("created_at", "TIMESTAMP"),
+    ],
+    "case_documents": [
+        ("case_id", "TEXT"), ("tenant_id", "TEXT"), ("filename", "TEXT"),
+        ("doc_type", "TEXT"), ("storage_path", "TEXT"), ("page_count", "INTEGER"),
+        ("size_bytes", "INTEGER"), ("status", "TEXT"), ("error_code", "TEXT"),
+        ("uploaded_by", "TEXT"), ("created_at", "TIMESTAMP"), ("updated_at", "TIMESTAMP"),
+    ],
+    "case_reviews": [
+        ("case_id", "TEXT"), ("tenant_id", "TEXT"), ("actor_id", "TEXT"),
+        ("action", "TEXT"), ("note", "TEXT"), ("created_at", "TIMESTAMP"),
+    ],
+    "companies": [("name", "TEXT"), ("sector", "TEXT"), ("created_at", "TIMESTAMP")],
+    "institution_policies": [
+        ("current_ratio_safe", "DOUBLE PRECISION"), ("current_ratio_min", "DOUBLE PRECISION"),
+        ("dscr_safe", "DOUBLE PRECISION"), ("dscr_min", "DOUBLE PRECISION"),
+        ("de_high", "DOUBLE PRECISION"), ("auto_approve_cutoff", "DOUBLE PRECISION"),
+        ("auto_reject_cutoff", "DOUBLE PRECISION"), ("penalty_weights", "TEXT"),
+        ("created_at", "TIMESTAMP"),
+    ],
+}
+
+# Indexes run only after the columns they reference are guaranteed to exist.
+POSTGRES_APP_INDEXES = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_logs_tenant_seq ON audit_logs(tenant_id, sequence_number)",
+    "CREATE INDEX IF NOT EXISTS idx_appraisal_created_at ON appraisal_records(created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_appraisal_case_id ON appraisal_records(case_id)",
+    "CREATE INDEX IF NOT EXISTS idx_loan_cases_status ON loan_cases(status)",
+    "CREATE INDEX IF NOT EXISTS idx_loan_cases_institution ON loan_cases(institution_id)",
+    "CREATE INDEX IF NOT EXISTS idx_loan_cases_created_at ON loan_cases(created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_loan_cases_assigned ON loan_cases(assigned_to)",
+    "CREATE INDEX IF NOT EXISTS idx_case_documents_case ON case_documents(case_id)",
+    "CREATE INDEX IF NOT EXISTS idx_case_documents_tenant ON case_documents(tenant_id)",
+    "CREATE INDEX IF NOT EXISTS idx_case_reviews_case ON case_reviews(case_id)",
+)
+
+
+def init_app_schema() -> bool:
+    """Bring the Postgres application schema up to date. No-op on SQLite.
+
+    Three ordered phases, so it is safe against a database that already holds
+    tables of a different shape - the situation in production, and the reason
+    the first attempt crashed at startup:
+
+      1. CREATE TABLE IF NOT EXISTS   - creates what is genuinely absent.
+      2. ALTER TABLE ADD COLUMN IF NOT EXISTS - reconciles tables that already
+         existed with an older shape. Nullable, no defaults, so existing rows
+         are never rewritten.
+      3. Indexes and the append-only triggers, once their columns exist.
+
+    Nothing is dropped, no column is altered or removed, no row is touched.
+    """
+    if not uses_postgres_app():
+        return False
+
+    conn = get_app_connection()
+    try:
+        cursor = conn.cursor()
+
+        # Phase 1: tables that do not exist at all.
+        for statement in POSTGRES_APP_DDL:
+            cursor.execute(statement)
+
+        # Phase 2: reconcile pre-existing tables, column by column.
+        for table, columns in POSTGRES_APP_COLUMNS.items():
+            for column, coltype in columns:
+                cursor.execute(
+                    'ALTER TABLE ' + table + ' ADD COLUMN IF NOT EXISTS "'
+                    + column + '" ' + coltype
+                )
+
+        # Phase 3: indexes and append-only enforcement.
+        for statement in POSTGRES_APP_INDEXES:
+            cursor.execute(statement)
+        for statement in POSTGRES_AUDIT_APPEND_ONLY:
+            cursor.execute(statement)
+
+        # Seed the default policy row only when absent, matching SQLite.
+        cursor.execute("SELECT 1 FROM institution_policies WHERE institution_id = ?", ('DEFAULT',))
+        if not cursor.fetchone():
+            cursor.execute(
+                """INSERT INTO institution_policies
+                   (institution_id, current_ratio_safe, current_ratio_min, dscr_safe,
+                    dscr_min, de_high, auto_approve_cutoff, auto_reject_cutoff, penalty_weights)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ('DEFAULT', 1.2, 1.0, 1.25, 1.0, 2.0, 60.0, 40.0,
+                 json.dumps({"integrity_mismatch": 15.0, "promoter_flags": 10.0})),
+            )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
 def init_db():
-    """Initializes local SQLite for fallback, and ensures Supabase is reachable."""
-    # Local SQLite fallback init
+    """Initialise the application store for the current environment.
+
+    This runs at module import, which is what made the P0-5 guard fatal: it
+    opened SQLite unconditionally, so importing this module in production raised
+    ProductionDatabaseError and the application never started.
+
+    It now branches. With Postgres configured the persistent schema is created
+    and SQLite is never touched, so production startup does not require it. In
+    development and test the existing SQLite bootstrap runs exactly as before.
+    In production without a persistent database the guard fires and startup
+    fails closed, which is the intended P0-5 behaviour.
+    """
+    if uses_postgres_app():
+        init_app_schema()
+        print("[STARTUP] Application store: Postgres schema verified.")
+        sb = _get_supabase()
+        if not sb:
+            enforce_database_policy(SUPABASE_URL, SUPABASE_KEY)
+        return
+
+    # Development / test: SQLite. assert_sqlite_permitted() inside
+    # get_app_connection() refuses this path in production.
     conn = get_sqlite_connection()
     cursor = conn.cursor()
     cursor.execute('CREATE TABLE IF NOT EXISTS companies (id TEXT PRIMARY KEY, name TEXT, sector TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
@@ -364,7 +764,10 @@ def init_db():
         sequence_number INTEGER NOT NULL,
         previous_hash TEXT NOT NULL,
         current_hash TEXT NOT NULL,
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        -- TEXT, not TIMESTAMP: this exact string is part of the HMAC payload.
+        -- A real TIMESTAMP round-trips as a datetime whose str() differs, which
+        -- makes verify_tenant_chain report a false tamper.
+        timestamp TEXT
     )''')
     cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_logs_tenant_seq ON audit_logs(tenant_id, sequence_number)')
 
@@ -386,7 +789,7 @@ def init_db():
         tenant_id TEXT PRIMARY KEY,
         latest_sequence INTEGER NOT NULL DEFAULT 0,
         latest_hash TEXT NOT NULL,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        updated_at TEXT
     )''')
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS system_state (
@@ -417,7 +820,7 @@ def init_db():
 
 def create_case(case_id: str, input_data: dict, institution_id: str = "DEFAULT") -> str:
     """Create a new loan case record in PENDING state. Returns case_id."""
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         conn.execute(
             '''INSERT INTO loan_cases (case_id, status, current_step, institution_id, input_data, created_at, updated_at)
@@ -433,7 +836,7 @@ def create_case(case_id: str, input_data: dict, institution_id: str = "DEFAULT")
 
 def update_case_step(case_id: str, step: str, status: str = "RUNNING") -> None:
     """Persist the coordinator's current execution step and status."""
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         conn.execute(
             '''UPDATE loan_cases SET current_step = ?, status = ?, updated_at = ? WHERE case_id = ?''',
@@ -454,7 +857,7 @@ def update_case_result(case_id: str, result_data: dict, status: str = "COMPLETED
         so the crash-recovery checkpoint written by update_case_step() is preserved.
         Used by [W7] early ingestion snapshot and agents intermediate snapshot.
     """
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         if status == "COMPLETED":
             conn.execute(
@@ -479,7 +882,7 @@ def update_case_result(case_id: str, result_data: dict, status: str = "COMPLETED
 
 def mark_case_failed(case_id: str, error_message: str) -> None:
     """Mark a case as FAILED with the error reason."""
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         conn.execute(
             '''UPDATE loan_cases SET status = 'FAILED', error_message = ?, updated_at = ? WHERE case_id = ?''',
@@ -496,7 +899,7 @@ def update_case_status(case_id: str, status: str, current_step: str = None) -> N
     Called by the appraisal_worker at every transition:
       PENDING → RUNNING → COMPLETED | PAUSED | REJECTED | RETRYING
     """
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         if current_step:
             conn.execute(
@@ -515,7 +918,7 @@ def update_case_status(case_id: str, status: str, current_step: str = None) -> N
 
 def get_case(case_id: str, tenant_id: str = None) -> dict | None:
     """Retrieve a loan case row by case_id. Returns None if not found or if tenant_id doesn't match."""
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         query = '''SELECT case_id, status, current_step, has_financials, has_promoters,
                    institution_id, input_data, result_data, error_message, created_at, updated_at
@@ -602,9 +1005,16 @@ def save_appraisal(data):
 
     # 2. LOCAL SQLITE FALLBACK (Best practice for resilience)
     try:
-        conn = get_sqlite_connection()
+        conn = get_app_connection()
         cursor = conn.cursor()
-        cursor.execute('INSERT OR REPLACE INTO companies (id, name, sector) VALUES (?, ?, ?)', (data.get("company_id"), data.get("company_name"), data.get("sector")))
+        # Portable upsert: SQLite (>= 3.24) and Postgres both support this.
+        # INSERT OR REPLACE would fail on Postgres and the surrounding except
+        # would swallow it, losing the appraisal.
+        cursor.execute(
+            'INSERT INTO companies (id, name, sector) VALUES (?, ?, ?) '
+            'ON CONFLICT(id) DO UPDATE SET name = excluded.name, sector = excluded.sector',
+            (data.get("company_id"), data.get("company_name"), data.get("sector")),
+        )
         # [P0-2] Provenance is supplied by the caller. Absent values stay None and
         # persist as SQL NULL - never invented.
         _prov = data.get("provenance_summary") or {}
@@ -659,7 +1069,7 @@ def get_recent_appraisals(limit=10, tenant_id: str = None):
             print(f"[ERROR] Supabase Fetch Error: {e}")
 
     # Fallback to SQLite
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     cursor = conn.cursor()
     if tenant_id:
         cursor.execute('SELECT a.*, c.name as company_name FROM appraisal_records a JOIN companies c ON a.company_id = c.id WHERE a.institution_id = ? ORDER BY a.created_at DESC LIMIT ?', (tenant_id, limit))
@@ -723,7 +1133,7 @@ def update_appraisal_status(
 
     sqlite_success = False
     try:
-        conn = get_sqlite_connection()
+        conn = get_app_connection()
         cursor = conn.cursor()
 
         if tenant_id:
@@ -752,7 +1162,7 @@ def update_appraisal_status(
 def get_policy(institution_id: str) -> dict:
     """Fetches policy parameters for an institution from SQLite fallback."""
     try:
-        conn = get_sqlite_connection()
+        conn = get_app_connection()
         cursor = conn.cursor()
         cursor.execute('''SELECT institution_id, current_ratio_safe, current_ratio_min,
                                  dscr_safe, dscr_min, de_high, auto_approve_cutoff,
@@ -779,11 +1189,20 @@ def get_policy(institution_id: str) -> dict:
 def save_policy(policy_data: dict) -> bool:
     """Saves policy parameters for an institution to SQLite fallback."""
     try:
-        conn = get_sqlite_connection()
+        conn = get_app_connection()
         cursor = conn.cursor()
-        cursor.execute('''INSERT OR REPLACE INTO institution_policies
+        cursor.execute('''INSERT INTO institution_policies
             (institution_id, current_ratio_safe, current_ratio_min, dscr_safe, dscr_min, de_high, auto_approve_cutoff, auto_reject_cutoff, penalty_weights)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''', (
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(institution_id) DO UPDATE SET
+                current_ratio_safe = excluded.current_ratio_safe,
+                current_ratio_min = excluded.current_ratio_min,
+                dscr_safe = excluded.dscr_safe,
+                dscr_min = excluded.dscr_min,
+                de_high = excluded.de_high,
+                auto_approve_cutoff = excluded.auto_approve_cutoff,
+                auto_reject_cutoff = excluded.auto_reject_cutoff,
+                penalty_weights = excluded.penalty_weights''', (
                 policy_data.get("institution_id"),
                 policy_data.get("current_ratio_safe"),
                 policy_data.get("current_ratio_min"),
@@ -917,7 +1336,7 @@ def list_cases(
     columns = _CASE_LIST_COLUMNS + ("_result_data",)
     select_sql = ", ".join(_CASE_LIST_COLUMNS) + ", result_data"
 
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
@@ -953,7 +1372,7 @@ def get_case_detail(case_id, tenant_id):
     columns = _CASE_LIST_COLUMNS + ("_result_data",)
     select_sql = ", ".join(_CASE_LIST_COLUMNS) + ", result_data"
 
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
@@ -987,7 +1406,7 @@ def get_case_appraisal(case_id, tenant_id):
     that has not completed, and for historical cases written before
     appraisal_records.case_id existed.
     """
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
@@ -1026,7 +1445,7 @@ def list_case_documents(case_id, tenant_id):
     storage_path is deliberately not selected: it is an internal object handle
     and has no business reaching a browser.
     """
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
@@ -1086,7 +1505,7 @@ def list_audit_events(
 
     where_sql = " AND ".join(where)
 
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM audit_logs WHERE " + where_sql, params)
@@ -1163,7 +1582,7 @@ def link_case_appraisal(
     params.append(case_id)
 
     try:
-        conn = get_sqlite_connection()
+        conn = get_app_connection()
         try:
             conn.execute(
                 "UPDATE loan_cases SET " + ", ".join(assignments) + " WHERE case_id = ?",

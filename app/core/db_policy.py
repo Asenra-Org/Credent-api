@@ -87,5 +87,23 @@ def enforce_database_policy(
 
 
 def assert_sqlite_permitted(context: str = "database access") -> None:
-    pass
+    """Guard the SQLite path itself, so no code route can slip past the policy.
+
+    This was briefly disabled to stop production startup crashing, because
+    ``init_db()`` opened SQLite at import time and there was no Postgres path for
+    the case tables. Disabling the guard fixed the crash by removing the control
+    entirely - production resumed writing lending records to ephemeral storage,
+    which is precisely the failure P0-5 exists to prevent.
+
+    The guard is restored. The startup crash is fixed properly instead: the
+    application schema now has a Postgres implementation (see
+    ``app.database.database.get_app_connection``), and ``init_db()`` no longer
+    touches SQLite when Postgres is configured.
+    """
+    if not sqlite_allowed():
+        raise ProductionDatabaseError(
+            f"SQLite is not permitted in production ({context}). "
+            "Configure a persistent database: SUPABASE_URL and SUPABASE_KEY for "
+            "the appraisal store, and AUTH_DATABASE_URL for the Postgres schema."
+        )
 

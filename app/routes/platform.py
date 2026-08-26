@@ -38,7 +38,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, EmailStr, Field
 
 from app.database.auth_db import get_auth_connection, uses_postgres
-from app.database.database import get_sqlite_connection
+from app.database.database import get_app_connection
 from app.security.dependencies import get_current_user_and_session, require_role
 from app.security.rate_limit_dependency import rate_limit
 
@@ -93,7 +93,7 @@ async def platform_overview():
     finally:
         auth.close()
 
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         c = conn.cursor()
         total_cases = _scalar(c, "SELECT COUNT(*) FROM loan_cases")
@@ -150,7 +150,7 @@ async def platform_overview():
 @router.get("/case-trend", dependencies=[Depends(SUPER_ADMIN_ONLY), Depends(rate_limit("admin"))])
 async def case_trend(days: int = Query(default=30, ge=1, le=365)):
     """Cases created per day, counted from loan_cases.created_at."""
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         c = conn.cursor()
         c.execute(
@@ -171,7 +171,7 @@ async def case_trend(days: int = Query(default=30, ge=1, le=365)):
 @router.get("/status-distribution", dependencies=[Depends(SUPER_ADMIN_ONLY), Depends(rate_limit("admin"))])
 async def status_distribution():
     """Appraisal analysis-status distribution, straight from the gate's own column."""
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         c = conn.cursor()
         c.execute(
@@ -205,7 +205,7 @@ def _org_activity(org_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     if not org_ids:
         return {}
     placeholders = ",".join("?" for _ in org_ids)
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         c = conn.cursor()
         c.execute(
@@ -404,7 +404,7 @@ async def organization_detail(org_id: str):
     finally:
         auth.close()
 
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         c = conn.cursor()
         case_count = _scalar(c, "SELECT COUNT(*) FROM loan_cases WHERE institution_id = ?", (org_id,))
@@ -577,7 +577,7 @@ async def platform_cases(
         params.append(status_filter)
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
 
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         c = conn.cursor()
         c.execute(f"SELECT COUNT(*) FROM loan_cases{where_sql}", params)
@@ -624,7 +624,7 @@ async def system_health():
     # --- Application database ---
     started = time.perf_counter()
     try:
-        conn = get_sqlite_connection()
+        conn = get_app_connection()
         try:
             conn.execute("SELECT 1").fetchone()
         finally:
@@ -702,7 +702,7 @@ async def system_health():
         "response_ms": None,
     })
 
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         c = conn.cursor()
         recent_failures = _scalar(
@@ -735,7 +735,7 @@ def _provenance_rollup() -> List[Dict[str, Any]]:
     count of appraisals per model, NOT a count of model calls - one appraisal
     involves several calls, and the platform does not record them individually.
     """
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         c = conn.cursor()
         c.execute(
@@ -797,7 +797,7 @@ async def platform_usage():
     Volume is real. Token usage and cost are not: without per-call accounting
     and provider pricing, any figure would be invented.
     """
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         c = conn.cursor()
         c.execute(

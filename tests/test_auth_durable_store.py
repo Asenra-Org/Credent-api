@@ -223,10 +223,36 @@ def test_sqlite_datetime_default_is_translated():
     assert "NOW()" in translate_sql("created_at TEXT DEFAULT (datetime('now'))")
 
 
-def test_insert_or_replace_is_translated():
-    assert "INSERT OR REPLACE" not in translate_sql(
-        "INSERT OR REPLACE INTO companies (id) VALUES (?)"
+def test_insert_or_replace_is_not_silently_rewritten():
+    """translate_sql must NOT turn INSERT OR REPLACE into a plain INSERT.
+
+    It used to. The rewrite looks like a harmless dialect fix but changes the
+    semantics: SQLite upserts, Postgres raises a duplicate-key error. Because
+    save_appraisal() wraps its writes in a broad except, that error was
+    swallowed and the appraisal was simply never stored - verified against a
+    real Postgres, where a second appraisal for the same company left
+    APPRAISALS=1.
+
+    Call sites now use ON CONFLICT ... DO UPDATE, which SQLite (>= 3.24) and
+    Postgres both support. This test pins that the lossy rewrite stays gone.
+    """
+    statement = "INSERT OR REPLACE INTO companies (id) VALUES (?)"
+    translated = translate_sql(statement)
+
+    # The placeholder is still translated - that part was always correct.
+    assert "%s" in translated
+    # But the statement is left semantically intact rather than downgraded.
+    assert "INSERT OR REPLACE" in translated
+
+
+def test_portable_upsert_survives_translation():
+    """The replacement idiom must pass through untouched."""
+    translated = translate_sql(
+        "INSERT INTO companies (id, name) VALUES (?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET name = excluded.name"
     )
+    assert "ON CONFLICT(id) DO UPDATE" in translated
+    assert translated.count("%s") == 2
 
 
 def test_ordinary_sql_passes_through_unchanged():

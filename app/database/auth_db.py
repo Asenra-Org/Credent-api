@@ -107,8 +107,11 @@ def translate_sql(sql: str) -> str:
     # Placeholders. Done last so the rewrites above can rely on '?'.
     sql = sql.replace("?", "%s")
 
-    # SQLite-only DDL/idioms that would otherwise reach Postgres.
-    sql = sql.replace("INSERT OR REPLACE INTO", "INSERT INTO")
+    # NOTE: "INSERT OR REPLACE INTO" is deliberately NOT rewritten here.
+    # Turning it into a plain INSERT looks harmless but changes the semantics:
+    # SQLite upserts, Postgres raises a duplicate-key error. Callers that
+    # swallow exceptions then lose the write silently. Call sites use an
+    # explicit ON CONFLICT ... DO UPDATE instead, which both backends support.
     sql = re.sub(r"datetime\(\s*'now'\s*\)", "NOW()", sql, flags=re.IGNORECASE)
     return sql
 
@@ -137,6 +140,22 @@ class _PgConnection:
 
     def cursor(self, *args, **kwargs):
         return _PgCursor(self._conn.cursor(*args, **kwargs))
+
+    def execute(self, sql: str, params: Any = None):
+        """Connection-level execute, as sqlite3 provides.
+
+        sqlite3.Connection.execute() implicitly creates a cursor; psycopg2's
+        connection has no such method. A great deal of existing code calls
+        conn.execute(...) directly, and without this every one of those call
+        sites raises AttributeError the moment the backend is Postgres - which
+        is exactly what a throwaway-Postgres run surfaced.
+
+        Returning the cursor matches sqlite3, so `cursor = conn.execute(...)`
+        followed by `cursor.fetchone()` keeps working unchanged.
+        """
+        cursor = self.cursor()
+        cursor.execute(sql, params)
+        return cursor
 
     def __getattr__(self, item):
         return getattr(self._conn, item)

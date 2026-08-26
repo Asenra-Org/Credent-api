@@ -89,21 +89,30 @@ async def update_institution_policy(
         "penalty_weights": request.penalty_weights
     }
 
-    from app.database.database import get_sqlite_connection, get_policy
+    from app.database.database import get_app_connection, get_policy
     from app.security.audit_service import create_audit_event
     import json
 
     # Get previous state for audit log
     previous_state = get_policy(institution_id)
 
-    conn = get_sqlite_connection()
+    conn = get_app_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
 
-        cursor.execute('''INSERT OR REPLACE INTO institution_policies
+        cursor.execute('''INSERT INTO institution_policies
             (institution_id, current_ratio_safe, current_ratio_min, dscr_safe, dscr_min, de_high, auto_approve_cutoff, auto_reject_cutoff, penalty_weights)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''', (
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(institution_id) DO UPDATE SET
+                current_ratio_safe = excluded.current_ratio_safe,
+                current_ratio_min = excluded.current_ratio_min,
+                dscr_safe = excluded.dscr_safe,
+                dscr_min = excluded.dscr_min,
+                de_high = excluded.de_high,
+                auto_approve_cutoff = excluded.auto_approve_cutoff,
+                auto_reject_cutoff = excluded.auto_reject_cutoff,
+                penalty_weights = excluded.penalty_weights''', (
                 institution_id,
                 request.current_ratio_safe,
                 request.current_ratio_min,
