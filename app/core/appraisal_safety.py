@@ -15,7 +15,10 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple
 
 from app.core.execution_state import (
+    DECISION_ANALYSIS_INCOMPLETE,
     AgentResult,
+    AgentStatus,
+    AnalysisStatus,
     AppraisalExecution,
     gate_decision,
 )
@@ -167,3 +170,93 @@ def persistence_fields(
         "degraded_components": execution_summary["degraded_components"],
         "decision_allowed": execution_summary["decision_allowed"],
     }
+
+
+# ---------------------------------------------------------------------------
+# [P0-4] Gate for the standalone CAM endpoint.
+#
+# apply_safety_gate() judges a whole coordinator run: it requires every agent in
+# REQUIRED_AGENTS to have reported, financial_health included. POST
+# /reports/generate-cam never receives a financial_health payload - it is handed
+# only the extracted document data and produces a CAM - so running the full gate
+# there would mark every successful CAM incomplete.
+#
+# This applies the same validators, scoped to the two agents that endpoint
+# genuinely has evidence for. It exists because a total provider failure (every
+# agent returning placeholders after HTTP 402) was reaching the UI as
+# "MANUAL REVIEW" - a human underwriting conclusion - rather than as the system
+# failure it actually was.
+# ---------------------------------------------------------------------------
+
+CAM_ENDPOINT_AGENTS = ("document_ingestion", "cam_generator")
+
+
+def gate_cam_response(extracted_pdf_data, cam_result):
+    """Gate a standalone CAM response. Returns (result, summary).
+
+    The result is returned unchanged when both the extraction and the CAM are
+    usable. When either failed, the credit recommendation is replaced with
+    ANALYSIS_INCOMPLETE - explicitly not MANUAL REVIEW, which a credit officer
+    would read as a human conclusion.
+
+    The caller's dict is not mutated; a copy is returned.
+    """
+    execution = AppraisalExecution()
+    for agent, payload in (
+        ("document_ingestion", extracted_pdf_data),
+        ("cam_generator", cam_result),
+    ):
+        status, error_code, reason = validate_agent_output(agent, payload)
+        execution.record(AgentResult(
+            agent=agent, status=status, error_code=error_code, reason=reason,
+        ))
+
+    failed = [r.agent for r in execution.results if not r.ok]
+    degraded = [
+        r.agent for r in execution.results
+        if r.status in (AgentStatus.DEGRADED, AgentStatus.FAILED, AgentStatus.BLOCKED)
+    ]
+    blocked = any(r.status is AgentStatus.BLOCKED for r in execution.results)
+
+    if blocked:
+        analysis_status = AnalysisStatus.BLOCKED.value
+    elif failed:
+        analysis_status = AnalysisStatus.FAILED.value
+    elif degraded:
+        analysis_status = AnalysisStatus.DEGRADED.value
+    else:
+        analysis_status = AnalysisStatus.COMPLETED.value
+
+    decision_allowed = not failed and not blocked
+
+    summary = {
+        "analysis_status": analysis_status,
+        "decision_allowed": decision_allowed,
+        "missing_required": sorted(failed),
+        "degraded_components": sorted(degraded),
+        "agent_results": [r.to_dict() for r in execution.results],
+    }
+
+    result = dict(cam_result or {})
+    # These travel with the payload either way, so the client can always tell a
+    # gated response from an ungated one.
+    result["analysis_status"] = analysis_status
+    result["decision_allowed"] = decision_allowed
+    result["missing_required"] = summary["missing_required"]
+    result["degraded_components"] = summary["degraded_components"]
+
+    if not decision_allowed:
+        result["decision"] = DECISION_ANALYSIS_INCOMPLETE
+        result["recommended_loan_amount"] = "UNAVAILABLE"
+        result["recommended_interest_rate"] = "UNAVAILABLE"
+        result["decision_rationale"] = (
+            "Credit recommendation unavailable: required analysis did not "
+            "complete (" + ", ".join(sorted(failed)) + "). This is a system "
+            "failure, not an underwriting conclusion."
+        )
+        # A recommendation block from a failed run must not survive either.
+        if isinstance(result.get("recommendation"), dict):
+            result["recommendation"] = dict(result["recommendation"])
+            result["recommendation"]["decision"] = DECISION_ANALYSIS_INCOMPLETE
+
+    return result, summary

@@ -11,6 +11,7 @@ from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 from fastapi import Depends
 from app.security.dependencies import require_role, get_current_tenant, get_current_user_and_session
+from app.core.appraisal_safety import gate_cam_response
 from app.security.audit_service import create_audit_event
 from app.database.database import get_app_connection
 import os
@@ -227,7 +228,9 @@ async def generate_credit_appraisal_memo(
 
         # Check if agent is available
         if cam_agent is None:
-            return {"status": "success", "cam_report": _default_cam(score)}
+            # No CAM agent means no analysis happened at all.
+            failed, _ = gate_cam_response(request.extracted_pdf_data, {})
+            return {"status": "success", "cam_report": failed}
 
         results = await cam_agent.generate_cam(
             request.extracted_pdf_data,
@@ -238,6 +241,15 @@ async def generate_credit_appraisal_memo(
 
         # Ensure critical fields exist
         results.setdefault("decision", "APPROVE" if score >= 60 else "REJECT")
+
+        # [P0-4] Gate the response. A total provider failure (every agent
+        # returning placeholders after an HTTP 402) previously reached the UI as
+        # "MANUAL REVIEW" - a human underwriting conclusion - rather than the
+        # system failure it was. gate_cam_response replaces the recommendation
+        # with ANALYSIS_INCOMPLETE and sets decision_allowed=False when either
+        # the extraction or the CAM is unusable. A genuine MANUAL REVIEW from a
+        # healthy run is returned untouched.
+        results, _gate = gate_cam_response(request.extracted_pdf_data, results)
 
         # Save to Cloud for Institutional Access
         if save_appraisal:
@@ -262,7 +274,12 @@ async def generate_credit_appraisal_memo(
                     "management_score": request.management_score,
                     "promoter_analysis": request.promoter_analysis,
                     "governance_assessment": request.governance_assessment,
-                    "institution_id": tenant_id
+                    "institution_id": tenant_id,
+                    # Persist the gate outcome, so a failed run is recorded as
+                    # a failed run rather than as a credit decision.
+                    "analysis_status": _gate["analysis_status"],
+                    "decision_allowed": _gate["decision_allowed"],
+                    "degraded_components": _gate["degraded_components"],
                 })
             except Exception as save_err:
                 print(f"[WARN] Failed to save appraisal to Cloud: {save_err}")
@@ -275,4 +292,7 @@ async def generate_credit_appraisal_memo(
             score = max(0, min(100, int(body.get("final_score", 50))))
         except Exception:
             score = 50
-        return {"status": "success", "cam_report": _default_cam(score)}
+        # The route itself failed. That is a system failure, and it must not be
+        # returned as a credit recommendation of any kind.
+        failed, _ = gate_cam_response({}, {})
+        return {"status": "success", "cam_report": failed}

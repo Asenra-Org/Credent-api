@@ -30,6 +30,13 @@ from langchain_groq import ChatGroq
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _MOVE_ON_STATUS = {413}
 
+# 402 insufficient_quota - the account is out of credits. Unlike 429 this does
+# not refill on its own, and unlike 413 it is not specific to one model: every
+# model on the provider will refuse identically. Retrying or rolling over just
+# burns time before the same failure, so the chain is abandoned immediately and
+# the exception propagates for the caller to gate on.
+_PROVIDER_EXHAUSTED_STATUS = {402}
+
 # Transport-level failures carry no HTTP status at all: a socket timeout or a
 # refused connection never reaches the point where the provider can answer.
 # These are the most obviously transient failures there are, so they must be
@@ -130,6 +137,12 @@ class ResilientChatGroq(ChatGroq):
                 except Exception as exc:
                     last_exc = exc
                     status = _status_of(exc)
+                    if status in _PROVIDER_EXHAUSTED_STATUS:
+                        print(
+                            f"[LLM] {model_name} returned {status} (provider quota "
+                            f"exhausted). Not retryable on any model - aborting."
+                        )
+                        raise
                     if status in _MOVE_ON_STATUS:
                         print(f"[LLM] {model_name} returned {status} (request too large). Trying next model.")
                         break
@@ -164,6 +177,12 @@ class ResilientChatGroq(ChatGroq):
                 except Exception as exc:
                     last_exc = exc
                     status = _status_of(exc)
+                    if status in _PROVIDER_EXHAUSTED_STATUS:
+                        print(
+                            f"[LLM] {model_name} returned {status} (provider quota "
+                            f"exhausted). Not retryable on any model - aborting."
+                        )
+                        raise
                     if status in _MOVE_ON_STATUS:
                         print(f"[LLM] {model_name} returned {status} (request too large). Trying next model.")
                         break
