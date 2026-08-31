@@ -35,7 +35,7 @@ TENANT_ORG = "HDFC Bank"
 # (email, role, organization). SUPER_ADMIN is a platform operator and belongs to
 # the platform organization, not to a lending tenant.
 ACCOUNTS = [
-    ("superadmin@asenra.in", "SUPER_ADMIN", PLATFORM_ORG),
+    ("karan.patil@asenra.in", "SUPER_ADMIN", PLATFORM_ORG),
     ("admin@hdfc.com", "ORG_ADMIN", TENANT_ORG),
     ("maker@hdfc.com", "CREDIT_ANALYST", TENANT_ORG),
     ("checker@hdfc.com", "UNDERWRITING_MANAGER", TENANT_ORG),
