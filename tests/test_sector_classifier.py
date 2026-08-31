@@ -75,7 +75,9 @@ class TestSectorClassifier:
             "citations": {},
         }
 
+        import json
         fake_model = MagicMock()
+        fake_model.content = json.dumps(fake_result)
         fake_model.model_dump.return_value = fake_result
 
         fake_chain = AsyncMock()
