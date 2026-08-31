@@ -5,6 +5,7 @@
 # =============================================================================
 import os
 import json
+import httpx
 import re
 from app.core.llm import ChatGroqWithFallback as ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
