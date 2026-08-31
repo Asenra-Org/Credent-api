@@ -1,20 +1,14 @@
+import json_repair
 
-from json_repair import repair_json
-import json
-
-text = """{
+s = '''{
   "document_control": {
-    "borrower_name": "Test Sarvam Ltd"
+    "borrower_name": "Test Co",
+    "case_id": "CRESEM-XXXX",
+    "appraisal_date": "NOT PROVIDED",
+    "status": "PENDING",
+    "version": "v1.0"
   },
-  "management": {
-    "promoter_background":
-"""
+  "executive_s'''
 
-try:
-    repaired = repair_json(text)
-    print("Repaired string:", repr(repaired))
-    parsed = json.loads(repaired)
-    print("Parsed JSON:", parsed)
-except Exception as e:
-    print(f"ERROR: {e}")
-
+res = json_repair.repair_json(s)
+print(res)

@@ -29,11 +29,8 @@ class RiskIntelligenceAgent:
             temperature=0, max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
             api_key=api_key or "dummy"
         )
-        try:
-            self.structured_llm = self.llm.with_structured_output(AdjustedRiskScore)
-        except Exception as e:
-            print(f"[WARN] Structured output init failed: {e}")
-            self.structured_llm = None
+        # Bypassed structured output to prevent token looping on Sarvam
+        self.structured_llm = None
 
     def _extract_json_from_text(self, text: str) -> dict:
         from json_repair import repair_json

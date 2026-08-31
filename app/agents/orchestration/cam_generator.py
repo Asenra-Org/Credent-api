@@ -261,30 +261,52 @@ class CAMGeneratorAgent:
         }
 
         try:
-            if self.structured_llm:
-                chain = prompt | self.structured_llm
-                result = await chain.ainvoke(invoke_params)
+            sarvam_key = os.getenv("SARVAM_API_KEY")
+            if sarvam_key:
+                # Direct API call to salvage reasoning_content from Sarvam
+                print("[CAM] Using direct Sarvam API call to prevent truncation data loss...")
+                messages = prompt.format_messages(**invoke_params)
+                payload = {
+                    "model": "sarvam-105b",
+                    "messages": [{"role": m.type, "content": m.content} for m in messages],
+                    "temperature": 0.1,
+                    "max_tokens": int(os.getenv("LLM_MAX_TOKENS", 4000))
+                }
+                async with httpx.AsyncClient(timeout=180.0) as client:
+                    resp = await client.post(
+                        "https://api.sarvam.ai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {sarvam_key}", "Content-Type": "application/json"},
+                        json=payload
+                    )
+                resp_data = resp.json()
+                choice = resp_data.get("choices", [{}])[0].get("message", {})
+                content_str = choice.get("content") or ""
+                if not content_str and choice.get("reasoning_content"):
+                    reasoning = choice.get("reasoning_content")
+                    print(f"[CAM] Content empty. Salvaging from reasoning_content (len={len(reasoning)})...")
+                    import re
+                    match = re.search(r'(\{[\s\S]+)', reasoning)
+                    content_str = match.group(1) if match else reasoning
                 
-                # result is a CAMDocument Pydantic model
-                data = result.model_dump()
-                
-                # To maintain compatibility with existing route assumptions:
-                data["decision"] = data["recommendation"]["decision"]
-                data["recommended_loan_amount"] = data["facility"]["requested_amount"]
-                data["recommended_interest_rate"] = "TBD"
-                data["decision_rationale"] = data["recommendation"]["rationale"]
-                return data
+                print(f"[CAM] LLM response received | chars={len(content_str)}")
+                data = self._extract_json_from_text(content_str)
             else:
-                chain = prompt | self.llm
-                res = await chain.ainvoke(invoke_params)
-                # [P0-1] The CAM response embeds borrower financials verbatim.
-                print(f"[CAM] LLM response received | chars={len(res.content or [])}")
-                data = self._extract_json_from_text(res.content)
-                data["decision"] = data.get("recommendation", {}).get("decision", "MANUAL REVIEW")
-                data["recommended_loan_amount"] = data.get("facility", {}).get("requested_amount", "NOT PROVIDED")
-                data["recommended_interest_rate"] = "TBD"
-                data["decision_rationale"] = data.get("recommendation", {}).get("rationale", "N/A")
-                return data
+                if self.structured_llm:
+                    chain = prompt | self.structured_llm
+                    result = await chain.ainvoke(invoke_params)
+                    data = result.model_dump()
+                else:
+                    chain = prompt | self.llm
+                    res = await chain.ainvoke(invoke_params)
+                    print(f"[CAM] LLM response received | chars={len(res.content or [])}")
+                    data = self._extract_json_from_text(res.content)
+            
+            # Formatting
+            data["decision"] = data.get("recommendation", {}).get("decision", "MANUAL REVIEW")
+            data["recommended_loan_amount"] = data.get("facility", {}).get("requested_amount", "NOT PROVIDED")
+            data["recommended_interest_rate"] = "TBD"
+            data["decision_rationale"] = data.get("recommendation", {}).get("rationale", "N/A")
+            return data
         except Exception as e:
             print(f"[CAM ERROR] {e}")
             return {

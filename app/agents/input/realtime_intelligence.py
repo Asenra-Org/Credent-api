@@ -40,11 +40,8 @@ class RealtimeIntelligenceAgent:
             max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
             api_key=api_key or "dummy"
         )
-        try:
-            self.structured_llm = self.llm.with_structured_output(ResearchReport, method="json_mode")
-        except Exception as e:
-            print(f"[WARN] Structured output init failed: {e}")
-            self.structured_llm = None
+        # Bypassed structured output to prevent Sarvam looping
+        self.structured_llm = None
         
         self.search = True
 
