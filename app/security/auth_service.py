@@ -11,7 +11,7 @@ from app.database.auth_db import get_auth_connection
 
 JWT_SECRET = os.getenv("JWT_SECRET", "super-secret-development-key-only")
 JWT_ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 15
+ACCESS_TOKEN_EXPIRE_MINUTES = 60  # Appraisal runs can take 20-40+ min; 15 min caused mid-run logouts
 REFRESH_TOKEN_EXPIRE_DAYS = 1
 
 BOOTSTRAP_TOKEN = os.getenv("BOOTSTRAP_TOKEN", "default-dev-bootstrap-do-not-use")
