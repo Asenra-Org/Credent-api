@@ -25,11 +25,15 @@ from app.core.execution_state import AnalysisStatus, DECISION_ANALYSIS_INCOMPLET
 
 logger = logging.getLogger(__name__)
 
-# Timeout threshold for downstream asynchronous agent executions
-AGENT_TIMEOUT_SECONDS = 120.0
+# Timeout threshold for downstream asynchronous agent executions.
+# Sarvam-105b can take 3-5 min per LLM call; with 4 agents running in
+# parallel the old 120 s budget was routinely exhausted before any of them
+# could finish, producing "ANALYSIS INCOMPLETE" on every run.
+# 900 s (15 min) gives the full parallel batch room to complete.
+AGENT_TIMEOUT_SECONDS = 900.0
 
 # Timeout threshold for explanation generation
-EXPLANATION_TIMEOUT_SECONDS = 60.0
+EXPLANATION_TIMEOUT_SECONDS = 120.0
 
 # Safe Default Policy Configuration (Fallback)
 DEFAULT_POLICY = {
