@@ -309,6 +309,14 @@ class CAMGeneratorAgent:
                     print(f"[CAM] LLM response received | chars={len(res.content or [])}")
                     data = self._extract_json_from_text(res.content)
             
+            # Defensive: json_repair may return a list instead of dict
+            if isinstance(data, list):
+                print(f"[CAM] WARNING: JSON parsed as list (len={len(data)}), unwrapping first dict element")
+                data = next((item for item in data if isinstance(item, dict)), {})
+            if not isinstance(data, dict):
+                print(f"[CAM] WARNING: Unexpected type {type(data)}, resetting to empty dict")
+                data = {}
+
             # Formatting
             data["decision"] = data.get("recommendation", {}).get("decision", "MANUAL REVIEW")
             data["recommended_loan_amount"] = data.get("facility", {}).get("requested_amount", "NOT PROVIDED")
