@@ -267,9 +267,11 @@ class CAMGeneratorAgent:
                 # Direct API call to salvage reasoning_content from Sarvam
                 print("[CAM] Using direct Sarvam API call to prevent truncation data loss...")
                 messages = prompt.format_messages(**invoke_params)
+                # LangChain uses 'human'/'ai' but Sarvam only accepts 'user'/'assistant'/'system'/'tool'
+                role_map = {"human": "user", "ai": "assistant", "system": "system", "tool": "tool"}
                 payload = {
                     "model": "sarvam-105b",
-                    "messages": [{"role": m.type, "content": m.content} for m in messages],
+                    "messages": [{"role": role_map.get(m.type, m.type), "content": m.content} for m in messages],
                     "temperature": 0.1,
                     "max_tokens": int(os.getenv("LLM_MAX_TOKENS", 4000))
                 }
