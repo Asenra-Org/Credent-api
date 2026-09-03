@@ -69,7 +69,7 @@ class TestIsolationHoldsWhenSarvamIsPresent:
         agent = DocumentIngestionAgent()
 
         # Confirm we really are on the Sarvam path for this test.
-        assert type(agent.llm).__name__ == "ChatOpenAI"
+        assert type(agent.llm).__name__ == "SarvamChatWrapper"
 
         agent.structured_llm = None
         payload = """
