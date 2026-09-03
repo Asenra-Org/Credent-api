@@ -1317,10 +1317,24 @@ class DocumentIngestionAgent:
             chain = prompt | self.llm
             raw_result = await chain.ainvoke({"text": truncated_text})
             raw_response = raw_result.content if hasattr(raw_result, 'content') else str(raw_result)
+            if not raw_response and hasattr(raw_result, 'additional_kwargs'):
+                reasoning = raw_result.additional_kwargs.get("reasoning_content", "")
+                if reasoning:
+                    import re
+                    match = re.search(r'(\{[\s\S]+)', reasoning)
+                    raw_response = match.group(1) if match else reasoning
+                    print(f"[PARSE] Content empty. Salvaged from reasoning_content (len={len(reasoning)})")
+
             # [P0-1] The raw response carries the borrower's full financial payload.
             # Log only that a response was received, never its contents.
             print(f"[PARSE] LLM response received | chars={len(raw_response)}")
             parsed = self._extract_json_from_text(raw_response)
+            
+            # Defensive list check (json_repair issue)
+            if isinstance(parsed, list):
+                parsed = next((item for item in parsed if isinstance(item, dict)), {})
+            if not isinstance(parsed, dict):
+                parsed = {}
 
             # Fill defaults for any missing keys
             for key, default_val in DEFAULT_EXTRACTION.items():

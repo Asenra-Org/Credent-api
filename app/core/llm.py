@@ -260,6 +260,21 @@ class ChatGroqWithFallback:
             # Sarvam path and is NOT a declared dependency in requirements.txt.
             # A module-level import crashes Groq-only deployments on startup.
             from langchain_openai import ChatOpenAI
+            from langchain_core.outputs import ChatResult
+
+            class SarvamChatWrapper(ChatOpenAI):
+                async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+                    res = await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+                    for gen in res.generations:
+                        msg = gen.message
+                        if not msg.content and hasattr(msg, "additional_kwargs"):
+                            reasoning = msg.additional_kwargs.get("reasoning_content", "")
+                            if reasoning:
+                                import re
+                                match = re.search(r'(\{[\s\S]+)', reasoning)
+                                msg.content = match.group(1) if match else reasoning
+                                gen.text = msg.content
+                    return res
 
             # Ensure max_tokens defaults to LLM_MAX_TOKENS from env (fallback to 4000)
             max_tokens = kwargs.get("max_tokens")
@@ -267,7 +282,7 @@ class ChatGroqWithFallback:
                 max_tokens = int(os.getenv("LLM_MAX_TOKENS", 4000))
                 
             kwargs.pop("api_key", None)
-            return ChatOpenAI(
+            return SarvamChatWrapper(
                 base_url=SARVAM_BASE_URL,
                 api_key=sarvam_api_key,
                 model=SARVAM_MODEL,
