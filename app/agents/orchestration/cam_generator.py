@@ -273,12 +273,17 @@ class CAMGeneratorAgent:
                     "temperature": 0.1,
                     "max_tokens": int(os.getenv("LLM_MAX_TOKENS", 4000))
                 }
-                async with httpx.AsyncClient(timeout=180.0) as client:
+                async with httpx.AsyncClient(timeout=900.0) as client:
                     resp = await client.post(
                         "https://api.sarvam.ai/v1/chat/completions",
                         headers={"Authorization": f"Bearer {sarvam_key}", "Content-Type": "application/json"},
                         json=payload
                     )
+                
+                if resp.status_code != 200:
+                    print(f"[CAM ERROR] Sarvam API HTTP {resp.status_code}: {resp.text}")
+                    resp.raise_for_status()
+
                 resp_data = resp.json()
                 choice = resp_data.get("choices", [{}])[0].get("message", {})
                 content_str = choice.get("content") or ""
