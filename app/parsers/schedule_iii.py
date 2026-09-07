@@ -351,3 +351,102 @@ def looks_like_schedule_iii(text: str) -> bool:
                "shareholders' funds", "share capital", "trade payables",
                "borrowings", "reserves and surplus")
     return sum(1 for m in markers if m in lowered) >= 2
+
+
+# ---------------------------------------------------------------------------
+# Handoff to the ingestion pipeline
+# ---------------------------------------------------------------------------
+
+_ENTITY_PATTERNS = (
+    re.compile(r"^\s*(?:company\s*name|name\s*of\s*(?:the\s*)?company|entity\s*name)\s*[:\-]\s*(.+)$",
+               re.IGNORECASE | re.MULTILINE),
+    # A statutory statement names the entity in its first few lines, usually
+    # ending in a recognised corporate suffix.
+    re.compile(r"^\s*([A-Z][A-Za-z0-9&'.,\- ]{3,80}?(?:Private\s+Limited|Pvt\.?\s*Ltd\.?|"
+               r"Limited|Ltd\.?|LLP|Enterprises|Industries|Traders))\s*$",
+               re.MULTILINE),
+)
+
+
+def extract_entity_name(text: str) -> Optional[str]:
+    """Read the borrower's registered name without a model.
+
+    Only an explicit caption or a line ending in a corporate suffix counts. A
+    wrong name is worse than none - it attaches the appraisal to the wrong
+    borrower - so anything ambiguous returns None and the LLM is asked instead.
+    """
+    if not text:
+        return None
+    for pattern in _ENTITY_PATTERNS:
+        m = pattern.search(text[:2000])
+        if m:
+            name = _TRAILING_NOTE.sub("", m.group(1)).strip(" .-")
+            if 3 < len(name) <= 120:
+                return name
+    return None
+
+
+# Fields the ingestion payload expects, and where they come from here.
+_PAYLOAD_MAP = {
+    "total_revenue": lambda r: r.value("total_revenue"),
+    "total_debt": lambda r: r.total_debt(),
+    "shareholder_equity": lambda r: r.equity(),
+    "current_assets": lambda r: r.value("current_assets"),
+    "current_liabilities": lambda r: r.current_liabilities(),
+    "ebitda": lambda r: r.ebitda(),
+    "pat": lambda r: r.value("pat"),
+}
+
+# Without these two, no meaningful credit ratio can be produced, so the
+# deterministic pass cannot be said to have carried the document on its own.
+CORE_FIELDS = ("total_revenue", "total_debt")
+
+
+def to_extraction_payload(result: ParseResult, text: str = "") -> Dict[str, Any]:
+    """Shape a ParseResult like the ingestion agent's extraction dict.
+
+    Only keys the parser genuinely established are included, so a caller can
+    merge this over or under an LLM result without inventing anything. Values
+    are already in rupees.
+    """
+    payload: Dict[str, Any] = {}
+    for name, get in _PAYLOAD_MAP.items():
+        value = get(result)
+        if value is not None:
+            payload[name] = value
+
+    name = extract_entity_name(text)
+    if name:
+        payload["company_name"] = name
+
+    # Citations in the shape the pipeline already uses, but verified: each one
+    # names the line it was matched from rather than asserting a page.
+    citations: Dict[str, Any] = {}
+    for field_name, alias in (("total_revenue", "revenue"),
+                              ("long_term_debt", "debt"),
+                              ("share_capital", "equity")):
+        fig = result.figures.get(field_name)
+        if fig:
+            entry = {
+                "page": None,
+                "line": fig.line_number,
+                "snippet": fig.source_line,
+                "document": "Schedule III financial statement",
+                "location": fig.caption,
+                "confidence": "VERIFIED",
+                "method": "deterministic",
+            }
+            citations[alias] = entry
+            citations[field_name] = entry
+    if citations:
+        payload["citations"] = citations
+
+    return payload
+
+
+def carried_the_document(result: ParseResult) -> bool:
+    """Whether the deterministic pass alone yields a usable financial picture."""
+    return all(
+        (result.total_debt() if f == "total_debt" else result.value(f)) is not None
+        for f in CORE_FIELDS
+    )

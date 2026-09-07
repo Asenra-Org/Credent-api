@@ -18,6 +18,12 @@ from typing import List, Optional, Any, Literal
 from pydantic import field_validator, model_validator
 
 from app.agents.security.document_security import DocumentSecurityAgent
+from app.parsers.schedule_iii import (
+    carried_the_document,
+    looks_like_schedule_iii,
+    parse_schedule_iii,
+    to_extraction_payload,
+)
 
 CRORE = 10_000_000
 
@@ -983,6 +989,34 @@ class DocumentIngestionAgent:
             }
             return rejected
 
+        # -------------------------------------------------------------------
+        # Deterministic pass, before any provider call.
+        #
+        # Schedule III fixes the captions in every Indian statutory statement,
+        # so the headline figures can be matched in code. What this finds is
+        # authoritative: it came from a line in the document rather than from a
+        # model's reading of it, and it carries that line as its citation.
+        # The LLM below still runs for narrative and for anything unmatched,
+        # but it can no longer overwrite a verified number - and if the
+        # provider is unavailable, the appraisal still has its financials.
+        # -------------------------------------------------------------------
+        deterministic: dict = {}
+        parse_result = None
+        if looks_like_schedule_iii(raw_text):
+            try:
+                parse_result = parse_schedule_iii(raw_text)
+                deterministic = to_extraction_payload(parse_result, raw_text)
+                if deterministic:
+                    print(
+                        f"[PARSE] Deterministic pass matched {len(deterministic)} field(s) "
+                        f"from Schedule III captions; no provider call was needed for them."
+                    )
+            except Exception as det_err:
+                # The deterministic path must never be able to fail the
+                # extraction - it is an optimisation over the LLM, not a gate.
+                print(f"[PARSE] Deterministic pass unavailable: {type(det_err).__name__}")
+                deterministic, parse_result = {}, None
+
         prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a Senior Indian Credit Risk Officer. Extract all requested details from the raw document text.
 
@@ -1352,6 +1386,20 @@ class DocumentIngestionAgent:
                 parsed["base_score"] = 65
 
             parsed["citations"] = _clean_citations(parsed.get("citations"))
+
+            # A figure matched from a document line outranks the same figure
+            # inferred by a model, so the deterministic pass is applied last.
+            if deterministic:
+                det_citations = deterministic.pop("citations", None)
+                parsed.update(deterministic)
+                if det_citations:
+                    merged = dict(parsed.get("citations") or {})
+                    merged.update(det_citations)
+                    parsed["citations"] = merged
+                parsed["extraction_method"] = "deterministic+llm"
+            else:
+                parsed["extraction_method"] = "llm"
+
             parsed["extraction_degraded"] = False
             parsed["degradation_reason"] = None
             return parsed
@@ -1359,10 +1407,45 @@ class DocumentIngestionAgent:
             raw_error = str(e2)
             print(f"[PARSE] Raw fallback failed: {e2}")
 
-        # Attempt 3: Return defaults
+        # -------------------------------------------------------------------
+        # Attempt 3: the provider failed. If the deterministic pass carried the
+        # document, the appraisal still has its financials and is NOT degraded -
+        # every figure below was matched from a line in the document, which is
+        # a stronger provenance than the LLM would have given. Only the
+        # narrative is missing, and narrative is not a credit decision.
+        #
+        # This is the point of the deterministic pass: a provider outage stops
+        # being an outage for any borrower who filed under Schedule III.
+        # -------------------------------------------------------------------
+        if deterministic and parse_result is not None and carried_the_document(parse_result):
+            print(
+                "[PARSE] Provider unavailable, but the deterministic pass carried "
+                "the document. Financials stand; narrative is unavailable."
+            )
+            recovered = DEFAULT_EXTRACTION.copy()
+            recovered["citations"] = DEFAULT_EXTRACTION["citations"].copy()
+            det_citations = deterministic.pop("citations", None)
+            recovered.update(deterministic)
+            if det_citations:
+                merged = dict(recovered.get("citations") or {})
+                merged.update(det_citations)
+                recovered["citations"] = merged
+            recovered["extraction_degraded"] = False
+            recovered["degradation_reason"] = None
+            recovered["extraction_method"] = "deterministic"
+            recovered["qualitative_notes"] = (
+                "Financial figures were read directly from the statement under "
+                "Schedule III and each is traceable to its source line. "
+                "Narrative analysis was unavailable because the AI provider did "
+                "not respond; it does not affect the figures above."
+            )
+            recovered["legal_risks"] = []
+            return recovered
+
         print("[PARSE] All AI extraction failed. Returning defaults.")
         degraded = DEFAULT_EXTRACTION.copy()
         degraded["citations"] = DEFAULT_EXTRACTION["citations"].copy()
+        degraded["extraction_method"] = "none"
         degraded["degradation_reason"] = (
             f"AI extraction failed. Structured attempt: {structured_error or 'n/a'}. "
             f"Raw attempt: {raw_error or 'n/a'}."
