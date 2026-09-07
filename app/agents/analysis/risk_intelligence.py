@@ -8,6 +8,7 @@ import os
 import json
 import re
 from app.core.llm import ChatGroqWithFallback as ChatGroq
+from app.core.llm import configured_max_tokens
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from typing import List
@@ -26,7 +27,7 @@ class RiskIntelligenceAgent:
         
         self.llm = ChatGroq(
             model=os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b"),
-            temperature=0, max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
+            temperature=0, max_tokens=configured_max_tokens(),
             api_key=api_key or "dummy"
         )
         # Bypassed structured output to prevent token looping on Sarvam

@@ -11,6 +11,7 @@ import logging
 from typing import Any
 
 from app.core.llm import ChatGroqWithFallback as ChatGroq
+from app.core.llm import configured_max_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class ManagementQualityAgent:
 
         self.llm = ChatGroq(
             model=os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b"),
-            temperature=0, max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
+            temperature=0, max_tokens=configured_max_tokens(),
             api_key=api_key or "dummy",
             model_kwargs={"response_format": {"type": "json_object"}}
         )

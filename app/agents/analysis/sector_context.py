@@ -13,6 +13,7 @@ from collections import defaultdict
 from typing import Any, Callable, List, Optional
 
 from app.core.llm import ChatGroqWithFallback as ChatGroq
+from app.core.llm import configured_max_tokens
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
@@ -75,7 +76,7 @@ class SectorContextAgent:
 
         self.llm = ChatGroq(
             model=os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b"),
-            temperature=0, max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
+            temperature=0, max_tokens=configured_max_tokens(),
             api_key=api_key or "dummy",
         )
 

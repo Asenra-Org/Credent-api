@@ -8,6 +8,7 @@ import os
 import json
 import re
 from app.core.llm import ChatGroqWithFallback as ChatGroq
+from app.core.llm import configured_max_tokens
 from duckduckgo_search import DDGS
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
@@ -37,7 +38,7 @@ class RealtimeIntelligenceAgent:
             model=os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b"),
             # [P0-3] Decision path: greedy decoding.
             temperature=DECISION_PATH_TEMPERATURE,
-            max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
+            max_tokens=configured_max_tokens(),
             api_key=api_key or "dummy"
         )
         # Bypassed structured output to prevent Sarvam looping

@@ -11,6 +11,7 @@ import asyncio
 from datetime import datetime
 
 from app.core.llm import ChatGroqWithFallback as ChatGroq
+from app.core.llm import configured_max_tokens
 from langchain_core.prompts import ChatPromptTemplate
 from app.agents.input.document_ingestion import DocumentIngestionAgent
 from app.agents.analysis.financial_health import FinancialHealthAgent
@@ -108,7 +109,7 @@ class AgentCoordinator:
             model=os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b"),
             # [P0-3] Decision path: greedy decoding.
             temperature=DECISION_PATH_TEMPERATURE,
-            max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
+            max_tokens=configured_max_tokens(),
             api_key=api_key or "dummy",
         )
 

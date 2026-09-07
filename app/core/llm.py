@@ -244,7 +244,7 @@ def active_provider() -> dict:
             # own max_retries=3 is the only retry behaviour.
             "model_failover_active": False,
             "sdk_retries": 3,
-            "max_tokens": os.getenv("LLM_MAX_TOKENS") or "4000",
+            "max_tokens": configured_max_tokens(),
             "note": (
                 "SARVAM_API_KEY is set, which takes precedence over the Groq path. "
                 "PRIMARY_LLM_MODEL and FALLBACK_LLM_MODEL_* are not read while it "
@@ -261,7 +261,7 @@ def active_provider() -> dict:
         "fallback_models": [m for m in chain if m != primary],
         "model_failover_active": True,
         "sdk_retries": None,
-        "max_tokens": os.getenv("LLM_MAX_TOKENS") or None,
+        "max_tokens": configured_max_tokens(),
         "note": None,
     }
 
@@ -365,7 +365,7 @@ class ChatGroqWithFallback:
 
             max_tokens = kwargs.get("max_tokens")
             if max_tokens is None:
-                max_tokens = int(os.getenv("LLM_MAX_TOKENS", 4000))
+                max_tokens = configured_max_tokens()
                 
             return SarvamChatWrapper(
                 api_key=sarvam_api_key,

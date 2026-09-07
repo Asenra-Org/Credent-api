@@ -12,6 +12,7 @@ import re
 import unicodedata
 from pypdf import PdfReader
 from app.core.llm import ChatGroqWithFallback as ChatGroq
+from app.core.llm import configured_max_tokens
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from typing import List, Optional, Any, Literal
@@ -457,7 +458,7 @@ class DocumentIngestionAgent:
         self.llm = ChatGroq(
             model=os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b"),
             temperature=0,
-            max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
+            max_tokens=configured_max_tokens(),
             api_key=api_key or "dummy"
         )
         try:
