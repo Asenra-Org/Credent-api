@@ -202,6 +202,22 @@ class ResilientChatGroq(ChatGroq):
 SARVAM_BASE_URL = "https://api.sarvam.ai/v1"
 SARVAM_MODEL = "sarvam-105b"
 
+# sarvam-105b is a reasoning model: it spends output tokens thinking before it
+# writes anything into `content`. A CAM-sized answer needs room for both. At
+# 4096 the reasoning alone consumed the entire budget and every response came
+# back with content="" - the model never reached its answer. This is the floor
+# for the whole pipeline; do not lower it below the cost of reasoning.
+DEFAULT_MAX_TOKENS = 16384
+
+
+def configured_max_tokens() -> int:
+    """The output token budget, read from the environment with a safe floor."""
+    try:
+        value = int(os.getenv("LLM_MAX_TOKENS", DEFAULT_MAX_TOKENS))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_TOKENS
+    return value if value > 0 else DEFAULT_MAX_TOKENS
+
 # Default when no PRIMARY_LLM_MODEL is configured on the Groq path. Kept here so
 # it is stated once.
 GROQ_DEFAULT_MODEL = "llama-3.1-8b-instant"
@@ -256,41 +272,106 @@ class ChatGroqWithFallback:
     def __new__(cls, *args, **kwargs):
         sarvam_api_key = os.getenv("SARVAM_API_KEY")
         if sarvam_api_key:
-            # Imported lazily: langchain_openai is only needed for the optional
-            # Sarvam path and is NOT a declared dependency in requirements.txt.
-            # A module-level import crashes Groq-only deployments on startup.
-            from langchain_openai import ChatOpenAI
-            from langchain_core.outputs import ChatResult
+            from langchain_core.language_models.chat_models import BaseChatModel
+            from langchain_core.outputs import ChatResult, ChatGeneration
+            from langchain_core.messages import AIMessage
+            from typing import Any, List, Optional
+            import httpx
 
-            class SarvamChatWrapper(ChatOpenAI):
-                async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
-                    res = await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
-                    for gen in res.generations:
-                        msg = gen.message
-                        if not msg.content and hasattr(msg, "additional_kwargs"):
-                            reasoning = msg.additional_kwargs.get("reasoning_content", "")
-                            if reasoning:
-                                import re
-                                match = re.search(r'(\{[\s\S]+)', reasoning)
-                                msg.content = match.group(1) if match else reasoning
-                                gen.text = msg.content
-                    return res
+            class SarvamChatWrapper(BaseChatModel):
+                api_key: str
+                model: str = "sarvam-105b"
+                temperature: float = 0.1
+                max_tokens: int = 4000
+                
+                @property
+                def _llm_type(self) -> str:
+                    return "sarvam-chat-wrapper"
 
-            # Ensure max_tokens defaults to LLM_MAX_TOKENS from env (fallback to 4000)
+                async def _agenerate(self, messages: List[Any], stop: Optional[List[str]] = None, run_manager: Optional[Any] = None, **kwargs: Any) -> ChatResult:
+                    sarvam_messages = []
+                    for msg in messages:
+                        # LangChain message types: HumanMessage -> human, AIMessage -> ai, SystemMessage -> system
+                        msg_type = getattr(msg, "type", "human")
+                        role = "user" if msg_type == "human" else "assistant" if msg_type == "ai" else msg_type
+                        sarvam_messages.append({"role": role, "content": getattr(msg, "content", str(msg))})
+                        
+                    payload = {
+                        "model": self.model,
+                        "messages": sarvam_messages,
+                        "temperature": self.temperature,
+                        "max_tokens": self.max_tokens
+                    }
+                    
+                    headers = {
+                        "Content-Type": "application/json",
+                        "API-Subscription-Key": self.api_key,
+                    }
+                    
+                    async with httpx.AsyncClient(timeout=180.0) as client:
+                        resp = await client.post("https://api.sarvam.ai/v1/chat/completions", json=payload, headers=headers)
+                        resp.raise_for_status()
+                        data = resp.json()
+                        
+                    choices = data.get("choices", [])
+                    if not choices:
+                        raise ValueError("No choices in Sarvam response")
+                        
+                    message_data = choices[0].get("message", {})
+                    content = message_data.get("content", "")
+                    reasoning = message_data.get("reasoning_content", "")
+                    finish_reason = choices[0].get("finish_reason")
+
+                    if finish_reason == "length":
+                        # Cut off at the token ceiling. Whether `content` is
+                        # empty (never stopped reasoning) or partial (stopped
+                        # mid-answer), what came back is not the model's
+                        # conclusion. Parsing either yields data that looks
+                        # complete and is not, so both fail here and the
+                        # safety gate reports the run as incomplete.
+                        raise ValueError(
+                            f"{self.model} was truncated at the "
+                            f"{self.max_tokens}-token ceiling "
+                            f"({len(content)} chars of content). Raise "
+                            f"LLM_MAX_TOKENS (floor {DEFAULT_MAX_TOKENS})."
+                        )
+
+                    if not content and reasoning:
+                        # The model finished but placed its answer in the
+                        # reasoning channel. Recovering it is legitimate;
+                        # doing so after a `length` finish is not, which is
+                        # why the check above comes first.
+                        import re
+                        match = re.search(r'(\{[\s\S]+)', reasoning)
+                        content = match.group(1) if match else reasoning
+                        print(
+                            f"[SARVAM WRAPPER] content empty with finish_reason="
+                            f"{finish_reason!r}; recovered {len(content)} chars "
+                            f"from reasoning_content"
+                        )
+
+                    if not content:
+                        raise ValueError(
+                            f"{self.model} returned an empty response "
+                            f"(finish_reason={finish_reason!r})"
+                        )
+                        
+                    msg_out = AIMessage(content=content)
+                    gen = ChatGeneration(message=msg_out, text=content)
+                    return ChatResult(generations=[gen])
+
+                def _generate(self, messages: List[Any], stop: Optional[List[str]] = None, run_manager: Optional[Any] = None, **kwargs: Any) -> ChatResult:
+                    raise NotImplementedError("Only async generation is supported")
+
             max_tokens = kwargs.get("max_tokens")
             if max_tokens is None:
                 max_tokens = int(os.getenv("LLM_MAX_TOKENS", 4000))
                 
-            kwargs.pop("api_key", None)
             return SarvamChatWrapper(
-                base_url=SARVAM_BASE_URL,
                 api_key=sarvam_api_key,
                 model=SARVAM_MODEL,
                 temperature=kwargs.get("temperature", 0.1),
-                max_tokens=None, # Prevents LangChain from sending max_completion_tokens
-                model_kwargs={"extra_body": {"max_tokens": max_tokens}},
-                timeout=None,
-                max_retries=3,
+                max_tokens=max_tokens
             )
 
         chain = _model_chain()

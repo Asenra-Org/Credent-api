@@ -12,6 +12,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any
 from app.core.decision_config import DECISION_PATH_TEMPERATURE
+from app.core.llm import DEFAULT_MAX_TOKENS, SARVAM_MODEL, configured_max_tokens
 
 class Citation(BaseModel):
     id: int = Field(default=0, description="Unique integer ID for the citation")
@@ -187,7 +188,7 @@ class CAMGeneratorAgent:
         self.llm = ChatGroq(
             model=os.getenv("PRIMARY_LLM_MODEL", "openai/gpt-oss-20b"),
             temperature=DECISION_PATH_TEMPERATURE,  # [P0-3] decision path 
-            max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
+            max_tokens=configured_max_tokens(),
             api_key=os.getenv("GROQ_API_KEY")
         )
         # Force structured_llm to None to bypass LangChain's strict length-checking parser.
@@ -196,7 +197,22 @@ class CAMGeneratorAgent:
         self.structured_llm = None
 
     def _build_prompt(self):
-        schema_json = json.dumps(CAMDocument.model_json_schema(), indent=2).replace("{", "{{").replace("}", "}}")
+        # The schema is derived from the Pydantic model, never read from a file.
+        # A file-based template briefly replaced this line and broke every CAM:
+        # it was an absolute path into one developer's scratch directory - absent
+        # in production - holding UTF-16 content, so _build_prompt() raised
+        # UnicodeDecodeError before the prompt was even assembled. Every
+        # appraisal then failed closed to ANALYSIS_INCOMPLETE.
+        #
+        # Deriving it from CAMDocument also keeps the prompt and the parser in
+        # lockstep: a field added to the model cannot drift out of the prompt.
+        # A blank instance, not model_json_schema(). The full schema is
+        # 16,711 characters of $defs and descriptions (~4,177 tokens) which
+        # the model must read and reason over before writing anything; the
+        # instance conveys the identical shape in 2,593 and reads as a form
+        # to fill in. That budget is the difference between a complete CAM
+        # and one truncated at "financial_analysis".
+        schema_json = json.dumps(CAMDocument().model_dump(), indent=2).replace("{", "{{").replace("}", "}}")
         return ChatPromptTemplate.from_messages([
             ("system", f"""You are the Senior Chief Credit Officer at an institutional bank.
             Your task is to synthesize the provided evidence into a PROFESSIONAL, BANKING-GRADE Credit Appraisal Memorandum (CAM).
@@ -270,10 +286,11 @@ class CAMGeneratorAgent:
                 # LangChain uses 'human'/'ai' but Sarvam only accepts 'user'/'assistant'/'system'/'tool'
                 role_map = {"human": "user", "ai": "assistant", "system": "system", "tool": "tool"}
                 payload = {
-                    "model": "sarvam-105b",
+                    "model": SARVAM_MODEL,
                     "messages": [{"role": role_map.get(m.type, m.type), "content": m.content} for m in messages],
-                    "temperature": 0.1,
-                    "max_tokens": int(os.getenv("LLM_MAX_TOKENS", 4000))
+                    # [P0-3] the decision path is greedy; 0.1 was drift.
+                    "temperature": DECISION_PATH_TEMPERATURE,
+                    "max_tokens": configured_max_tokens(),
                 }
                 async with httpx.AsyncClient(timeout=900.0) as client:
                     resp = await client.post(
@@ -287,14 +304,44 @@ class CAMGeneratorAgent:
                     resp.raise_for_status()
 
                 resp_data = resp.json()
-                choice = resp_data.get("choices", [{}])[0].get("message", {})
+                first_choice = resp_data.get("choices", [{}])[0]
+                choice = first_choice.get("message", {})
                 content_str = choice.get("content") or ""
+                finish_reason = first_choice.get("finish_reason")
+
+                if finish_reason == "length":
+                    # The response was cut off at the token ceiling. Two
+                    # shapes, one meaning:
+                    #   empty   - the model never stopped reasoning;
+                    #   partial - it emitted the leading sections in schema
+                    #             order and stopped, so five_cs, ratios and
+                    #             recommendation are simply absent.
+                    # json_repair will happily close the braces on the
+                    # second, yielding a document that parses and is not a
+                    # credit appraisal. Neither is recoverable: fail, and
+                    # let the gate report ANALYSIS_INCOMPLETE truthfully.
+                    raise ValueError(
+                        f"CAM generation was truncated at the "
+                        f"{payload['max_tokens']}-token ceiling "
+                        f"({len(content_str)} chars of content produced). "
+                        f"Raise LLM_MAX_TOKENS (floor {DEFAULT_MAX_TOKENS})."
+                    )
+
                 if not content_str and choice.get("reasoning_content"):
                     reasoning = choice.get("reasoning_content")
-                    print(f"[CAM] Content empty. Salvaging from reasoning_content (len={len(reasoning)})...")
+                    print(
+                        f"[CAM] content empty with finish_reason={finish_reason!r}; "
+                        f"recovering {len(reasoning)} chars from reasoning_content"
+                    )
                     import re
                     match = re.search(r'(\{[\s\S]+)', reasoning)
                     content_str = match.group(1) if match else reasoning
+
+                if not content_str:
+                    raise ValueError(
+                        f"CAM generation returned an empty response "
+                        f"(finish_reason={finish_reason!r})"
+                    )
                 
                 print(f"[CAM] LLM response received | chars={len(content_str)}")
                 data = self._extract_json_from_text(content_str)
@@ -311,17 +358,29 @@ class CAMGeneratorAgent:
             
             # Defensive: json_repair may return a list instead of dict
             if isinstance(data, list):
-                print(f"[CAM] WARNING: JSON parsed as list (len={len(data)}), unwrapping first dict element")
-                data = next((item for item in data if isinstance(item, dict)), {})
+                print(f"[CAM] WARNING: JSON parsed as list (len={len(data)}), merging dict elements")
+                merged = {}
+                for item in data:
+                    if isinstance(item, dict):
+                        merged.update(item)
+                data = merged
             if not isinstance(data, dict):
                 print(f"[CAM] WARNING: Unexpected type {type(data)}, resetting to empty dict")
                 data = {}
 
             # Formatting
-            data["decision"] = data.get("recommendation", {}).get("decision", "MANUAL REVIEW")
-            data["recommended_loan_amount"] = data.get("facility", {}).get("requested_amount", "NOT PROVIDED")
+            rec = data.get("recommendation", {})
+            if isinstance(rec, str):
+                data["decision"] = "MANUAL REVIEW"
+                data["decision_rationale"] = rec
+            else:
+                data["decision"] = rec.get("decision", "MANUAL REVIEW") if isinstance(rec, dict) else "MANUAL REVIEW"
+                data["decision_rationale"] = rec.get("rationale", "N/A") if isinstance(rec, dict) else "N/A"
+                
+            fac = data.get("facility", {})
+            data["recommended_loan_amount"] = fac.get("requested_amount", "NOT PROVIDED") if isinstance(fac, dict) else "NOT PROVIDED"
             data["recommended_interest_rate"] = "TBD"
-            data["decision_rationale"] = data.get("recommendation", {}).get("rationale", "N/A")
+            
             return data
         except Exception as e:
             print(f"[CAM ERROR] {e}")
