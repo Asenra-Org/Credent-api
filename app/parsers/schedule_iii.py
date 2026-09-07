@@ -419,6 +419,10 @@ def to_extraction_payload(result: ParseResult, text: str = "") -> Dict[str, Any]
     if name:
         payload["company_name"] = name
 
+    sector = extract_sector(text)
+    if sector:
+        payload["sector"] = sector
+
     # Citations in the shape the pipeline already uses, but verified: each one
     # names the line it was matched from rather than asserting a page.
     citations: Dict[str, Any] = {}
@@ -450,3 +454,26 @@ def carried_the_document(result: ParseResult) -> bool:
         (result.total_debt() if f == "total_debt" else result.value(f)) is not None
         for f in CORE_FIELDS
     )
+
+
+_SECTOR_PATTERN = re.compile(
+    r"^\s*(?:industry\s*/?\s*sector|sector|industry|nature\s+of\s+business|"
+    r"principal\s+business\s+activity|business\s+activity)\s*[:\-]\s*(.+)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def extract_sector(text: str) -> Optional[str]:
+    """Read the declared industry without a model.
+
+    Only an explicit caption counts. Inferring a sector from context is exactly
+    the kind of plausible guess that has no place in a credit file, so anything
+    unlabelled returns None and the caller leaves it unknown.
+    """
+    if not text:
+        return None
+    m = _SECTOR_PATTERN.search(text[:3000])
+    if not m:
+        return None
+    sector = _TRAILING_NOTE.sub("", m.group(1)).strip(" .-")
+    return sector if 2 < len(sector) <= 80 else None
