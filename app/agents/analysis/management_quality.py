@@ -11,6 +11,7 @@ import logging
 from typing import Any
 
 from app.core.llm import ChatGroqWithFallback as ChatGroq
+from app.core import llm_metering
 from app.core.llm import configured_max_tokens
 
 logger = logging.getLogger(__name__)

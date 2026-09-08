@@ -12,6 +12,7 @@ import re
 import unicodedata
 from pypdf import PdfReader
 from app.core.llm import ChatGroqWithFallback as ChatGroq
+from app.core import llm_metering
 from app.core.llm import configured_max_tokens
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field

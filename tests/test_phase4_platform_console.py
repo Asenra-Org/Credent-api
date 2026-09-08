@@ -293,20 +293,72 @@ class TestUnmeasuredMetricsAreNotFabricated:
         assert metrics["total_cases"]["measured"] is True
         assert metrics["total_cases"]["value"] == 2
 
-    def test_ai_operations_does_not_invent_request_counts(self):
+    def test_unimplemented_telemetry_is_still_reported_as_unmeasured(self):
+        """Retries and failovers are applied but never persisted, so they stay None."""
         token = super_admin_token()
         body = client.get("/api/v1/platform/ai-operations", headers=auth(token)).json()
         unmeasured = {m["metric"] for m in body["unmeasured"]}
-        assert {"requests", "average_latency", "token_usage", "failover_events"} <= unmeasured
+        assert {"retry_count", "failover_events"} <= unmeasured
         for m in body["unmeasured"]:
             assert m["value"] is None
+            assert m["measured"] is False
 
-    def test_usage_never_invents_a_cost_figure(self):
+    def test_token_counts_come_from_recorded_calls_only(self):
+        """A reported request count must be backed by rows, never inferred."""
         token = super_admin_token()
-        body = client.get("/api/v1/platform/usage", headers=auth(token)).json()
-        cost = next(m for m in body["unmeasured"] if m["metric"] == "estimated_cost")
-        assert cost["value"] is None
-        assert cost["measured"] is False
+        body = client.get("/api/v1/platform/ai-operations", headers=auth(token)).json()
+        metering = body["metering"]
+
+        if not metering.get("available"):
+            # Nothing recorded: usage must be declared unmeasured, not zero-filled
+            # in a way that reads as "no tokens were spent".
+            assert "token_usage" in {m["metric"] for m in body["unmeasured"]}
+        else:
+            assert metering["requests"] > 0
+            assert metering["successful_requests"] + metering["failed_requests"] == \
+                metering["requests"]
+            # Every agent attributed a call; the rollup cannot exceed the total.
+            assert sum(a["calls"] for a in metering["by_agent"]) == metering["requests"]
+
+    def test_a_call_recorded_without_a_price_list_carries_no_cost(self, monkeypatch):
+        """The anti-fabrication guarantee, enforced where the row is written.
+
+        Cost is resolved at write time from the price in force, so a row is the
+        right place to assert this: with no price configured the column must be
+        NULL rather than zero. A zero would read as "this call was free", which
+        is a different and false claim.
+        """
+        from app.core import llm_metering
+        from app.database.database import get_app_connection
+
+        monkeypatch.delenv("LLM_PRICE_PER_MTOK", raising=False)
+        marker = "test-unpriced-model"
+        llm_metering.record(
+            agent="pricing_guarantee_test", provider="sarvam", model=marker,
+            usage={"prompt_tokens": 100, "completion_tokens": 100, "total_tokens": 200},
+        )
+
+        conn = get_app_connection()
+        try:
+            c = conn.cursor()
+            c.execute("SELECT estimated_cost_inr, total_tokens FROM llm_call_log "
+                      "WHERE model = ?", (marker,))
+            row = c.fetchone()
+        finally:
+            conn.close()
+
+        assert row is not None, "the call was not recorded at all"
+        assert row[0] is None, "a cost was invented without a configured price"
+        assert row[1] == 200, "token counts must still be recorded"
+
+    def test_a_cost_is_never_derived_from_an_unknown_model(self):
+        """estimate_cost refuses a model absent from the configured price list."""
+        from app.core.llm_metering import estimate_cost
+
+        assert estimate_cost(None, 100, 100) is None
+        assert estimate_cost("some-unpriced-model", 100, 100) is None
+        # And it refuses when the counts themselves are unknown.
+        assert estimate_cost("sarvam-105b", None, 100) is None
 
 
 # ---------------------------------------------------------------------------

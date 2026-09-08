@@ -308,10 +308,39 @@ class ChatGroqWithFallback:
                         "API-Subscription-Key": self.api_key,
                     }
                     
-                    async with httpx.AsyncClient(timeout=180.0) as client:
-                        resp = await client.post("https://api.sarvam.ai/v1/chat/completions", json=payload, headers=headers)
-                        resp.raise_for_status()
-                        data = resp.json()
+                    from app.core import llm_metering
+
+                    with llm_metering.Timer() as _t:
+                        try:
+                            async with httpx.AsyncClient(timeout=180.0) as client:
+                                resp = await client.post(
+                                    "https://api.sarvam.ai/v1/chat/completions",
+                                    json=payload, headers=headers,
+                                )
+                                resp.raise_for_status()
+                                data = resp.json()
+                        except Exception as _call_err:
+                            # A call that returned nothing still cost money.
+                            # Recording failures is the whole point: the spend
+                            # that vanished into 402s and truncations was
+                            # previously invisible.
+                            llm_metering.record(
+                                provider="sarvam", model=self.model, succeeded=False,
+                                error_kind=type(_call_err).__name__,
+                                latency_ms=getattr(_t, "ms", None),
+                            )
+                            raise
+
+                    llm_metering.record(
+                        provider="sarvam", model=self.model,
+                        usage=llm_metering.extract_usage(data),
+                        finish_reason=(data.get("choices") or [{}])[0].get("finish_reason"),
+                        reasoning_chars=len(
+                            ((data.get("choices") or [{}])[0].get("message") or {})
+                            .get("reasoning_content") or ""
+                        ),
+                        latency_ms=_t.ms,
+                    )
                         
                     choices = data.get("choices", [])
                     if not choices:

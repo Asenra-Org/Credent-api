@@ -13,6 +13,7 @@ from collections import defaultdict
 from typing import Any, Callable, List, Optional
 
 from app.core.llm import ChatGroqWithFallback as ChatGroq
+from app.core import llm_metering
 from app.core.llm import configured_max_tokens
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field

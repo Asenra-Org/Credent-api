@@ -758,14 +758,62 @@ def _provenance_rollup() -> List[Dict[str, Any]]:
         conn.close()
 
 
+def _llm_rollup(where: str = "", params: tuple = ()) -> dict:
+    """Aggregate llm_call_log. Absent counts stay absent; nothing is inferred."""
+    conn = get_app_connection()
+    try:
+        c = conn.cursor()
+        c.execute(
+            f"""SELECT COUNT(*), SUM(succeeded), SUM(total_tokens),
+                       SUM(prompt_tokens), SUM(completion_tokens),
+                       AVG(latency_ms), SUM(estimated_cost_inr)
+                FROM llm_call_log {where}""", params)
+        row = c.fetchone() or ()
+        c.execute(
+            f"""SELECT agent, COUNT(*), SUM(succeeded), SUM(total_tokens),
+                       SUM(estimated_cost_inr)
+                FROM llm_call_log {where}
+                GROUP BY agent ORDER BY SUM(total_tokens) DESC""", params)
+        by_agent = [
+            {"agent": r[0], "calls": int(r[1] or 0),
+             "successful": int(r[2] or 0), "tokens": r[3],
+             "estimated_cost_inr": r[4]}
+            for r in c.fetchall()
+        ]
+    except Exception:
+        # The table is created at startup, but a console panel must not 500
+        # because accounting is unavailable.
+        return {"available": False, "by_agent": []}
+    finally:
+        conn.close()
+
+    calls = int(row[0] or 0)
+    successful = int(row[1] or 0)
+    return {
+        "available": calls > 0,
+        "requests": calls,
+        "successful_requests": successful,
+        "failed_requests": calls - successful,
+        "total_tokens": row[2],
+        "prompt_tokens": row[3],
+        "completion_tokens": row[4],
+        "average_latency_ms": round(row[5], 1) if row[5] is not None else None,
+        # NULL unless LLM_PRICE_PER_MTOK is configured for the model. A cost
+        # figure is never estimated from an unknown price list.
+        "estimated_cost_inr": row[6],
+        "by_agent": by_agent,
+    }
+
+
 @router.get("/ai-operations", dependencies=[Depends(SUPER_ADMIN_ONLY), Depends(rate_limit("admin"))])
 async def ai_operations():
     """Model operations.
 
-    Everything measurable here comes from the P0-2 provenance ledger, which
-    records the model that produced each appraisal. Per-call telemetry - latency,
-    retries, failovers, 429s, token counts - is not captured anywhere, so it is
-    reported as not measured rather than estimated.
+    Token counts, latency and success rate now come from llm_call_log, which
+    records every provider call including the ones that returned nothing - that
+    spend was previously invisible. Cost appears only where a price list is
+    configured; retries and failovers are still not persisted and are still
+    reported as not measured.
     """
     # Resolved through app.core.llm.active_provider() rather than read straight
     # from the environment. A configured SARVAM_API_KEY overrides the Groq path
@@ -773,20 +821,28 @@ async def ai_operations():
     # an operator the wrong thing about what is actually serving appraisals.
     from app.core.llm import active_provider
 
+    metering = _llm_rollup()
+    unmeasured = [
+        not_measured("retry_count", "The retry wrapper does not persist attempt counts."),
+        not_measured("failover_events", "Model rollover is applied but not recorded."),
+        not_measured("rate_limit_429_events", "Provider 429s are handled but not counted separately."),
+    ]
+    if metering.get("estimated_cost_inr") is None:
+        unmeasured.append(not_measured(
+            "estimated_cost",
+            "No price list configured. Set LLM_PRICE_PER_MTOK to the provider's "
+            "published rates; a cost is never estimated from an unknown price.",
+        ))
+    if not metering.get("available"):
+        unmeasured.append(not_measured(
+            "token_usage", "No provider calls recorded yet."))
+
     return {
         "status": "success",
         "configured": active_provider(),
         "provenance": _provenance_rollup(),
-        "unmeasured": [
-            not_measured("requests", "Per-call LLM telemetry (llm_call_log). Not implemented."),
-            not_measured("successful_requests", "Per-call LLM telemetry."),
-            not_measured("failed_requests", "Per-call LLM telemetry."),
-            not_measured("average_latency", "Per-call duration recording."),
-            not_measured("retry_count", "The retry wrapper does not persist attempt counts."),
-            not_measured("failover_events", "Model rollover is applied but not recorded."),
-            not_measured("rate_limit_429_events", "Provider 429s are handled but not counted."),
-            not_measured("token_usage", "Provider token accounting is not captured."),
-        ],
+        "metering": metering,
+        "unmeasured": unmeasured,
     }
 
 
@@ -817,15 +873,17 @@ async def platform_usage():
         "processing_volume": volume,
         "total_appraisals": appraisals,
         "by_model": _provenance_rollup(),
-        "unmeasured": [
-            not_measured("ai_requests", "Per-call LLM telemetry."),
-            not_measured("token_usage", "Provider token accounting."),
-            not_measured(
+        "metering": _llm_rollup(),
+        "unmeasured": (
+            []
+            if _llm_rollup().get("estimated_cost_inr") is not None
+            else [not_measured(
                 "estimated_cost",
-                "Token counts and a provider price list. Neither is available, "
-                "and a cost figure must never be estimated.",
-            ),
-        ],
+                "Token counts are recorded, but no provider price list is "
+                "configured. Set LLM_PRICE_PER_MTOK; a cost figure must never "
+                "be estimated from an unknown price.",
+            )]
+        ),
     }
 
 

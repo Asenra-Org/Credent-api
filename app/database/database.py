@@ -244,6 +244,26 @@ POSTGRES_APP_DDL = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS llm_call_log (
+        id TEXT PRIMARY KEY,
+        case_id TEXT,
+        institution_id TEXT,
+        agent TEXT NOT NULL,
+        provider TEXT,
+        model TEXT,
+        prompt_tokens INTEGER,
+        completion_tokens INTEGER,
+        total_tokens INTEGER,
+        reasoning_chars INTEGER,
+        finish_reason TEXT,
+        succeeded INTEGER NOT NULL DEFAULT 1,
+        error_kind TEXT,
+        latency_ms INTEGER,
+        estimated_cost_inr DOUBLE PRECISION,
+        created_at TEXT
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS audit_chain_heads (
         tenant_id TEXT PRIMARY KEY,
         latest_sequence INTEGER NOT NULL DEFAULT 0,
@@ -355,6 +375,8 @@ POSTGRES_APP_COLUMNS = {
 
 # Indexes run only after the columns they reference are guaranteed to exist.
 POSTGRES_APP_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_llm_call_log_case ON llm_call_log (case_id)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_call_log_agent ON llm_call_log (agent)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_logs_tenant_seq ON audit_logs(tenant_id, sequence_number)",
     "CREATE INDEX IF NOT EXISTS idx_appraisal_created_at ON appraisal_records(created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_appraisal_case_id ON appraisal_records(case_id)",
@@ -452,6 +474,31 @@ def init_db():
     cursor = conn.cursor()
     cursor.execute('CREATE TABLE IF NOT EXISTS companies (id TEXT PRIMARY KEY, name TEXT, sector TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
     cursor.execute('CREATE TABLE IF NOT EXISTS appraisal_records (id TEXT PRIMARY KEY, company_id TEXT, revenue REAL, debt REAL, base_score INTEGER, adjusted_score INTEGER, decision TEXT, recommended_loan_amount TEXT, recommended_interest_rate TEXT, decision_rationale TEXT, raw_document_data TEXT, integrity_flags TEXT, web_research TEXT, cam_report TEXT, financial_ratios TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+
+    # Per-call LLM accounting. Without this the platform console can only
+    # report token usage and cost as "not measured", which makes a licence
+    # impossible to price and an exhausted provider account impossible to
+    # explain after the fact.
+    cursor.execute('''CREATE TABLE IF NOT EXISTS llm_call_log (
+        id TEXT PRIMARY KEY,
+        case_id TEXT,
+        institution_id TEXT,
+        agent TEXT NOT NULL,
+        provider TEXT,
+        model TEXT,
+        prompt_tokens INTEGER,
+        completion_tokens INTEGER,
+        total_tokens INTEGER,
+        reasoning_chars INTEGER,
+        finish_reason TEXT,
+        succeeded INTEGER NOT NULL DEFAULT 1,
+        error_kind TEXT,
+        latency_ms INTEGER,
+        estimated_cost_inr REAL,
+        created_at TEXT
+    )''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_llm_call_log_case ON llm_call_log (case_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_llm_call_log_agent ON llm_call_log (agent)")
 
     # [Added] Initialize institution_policies table
     cursor.execute('''CREATE TABLE IF NOT EXISTS institution_policies (

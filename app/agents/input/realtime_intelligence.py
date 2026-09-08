@@ -8,6 +8,7 @@ import os
 import json
 import re
 from app.core.llm import ChatGroqWithFallback as ChatGroq
+from app.core import llm_metering
 from app.core.llm import configured_max_tokens
 from duckduckgo_search import DDGS
 from langchain_core.prompts import ChatPromptTemplate
