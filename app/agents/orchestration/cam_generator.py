@@ -300,10 +300,31 @@ class CAMGeneratorAgent:
                     )
                 
                 if resp.status_code != 200:
+                    # A refused call still consumed the request and, on some
+                    # providers, tokens. Recording it is the point: the spend
+                    # that vanished into 402s was previously invisible.
+                    from app.core import llm_metering
+                    llm_metering.record(
+                        agent="cam_generator", provider="sarvam",
+                        model=payload["model"], succeeded=False,
+                        error_kind=f"http_{resp.status_code}",
+                    )
                     print(f"[CAM ERROR] Sarvam API HTTP {resp.status_code}: {resp.text}")
                     resp.raise_for_status()
 
                 resp_data = resp.json()
+
+                from app.core import llm_metering
+                llm_metering.record(
+                    agent="cam_generator", provider="sarvam", model=payload["model"],
+                    usage=llm_metering.extract_usage(resp_data),
+                    finish_reason=(resp_data.get("choices") or [{}])[0].get("finish_reason"),
+                    reasoning_chars=len(
+                        ((resp_data.get("choices") or [{}])[0].get("message") or {})
+                        .get("reasoning_content") or ""
+                    ),
+                )
+
                 first_choice = resp_data.get("choices", [{}])[0]
                 choice = first_choice.get("message", {})
                 content_str = choice.get("content") or ""
@@ -384,10 +405,47 @@ class CAMGeneratorAgent:
             return data
         except Exception as e:
             print(f"[CAM ERROR] {e}")
+
+            # Narrative synthesis failed, but the extraction that fed it may
+            # have succeeded - and when it came from the deterministic parser
+            # those figures are traceable to a line in the statement. Printing
+            # "N/A" over numbers we hold and can prove is a lie about what the
+            # system knows, and it is the reason a working extraction still
+            # read as a total failure on screen.
+            #
+            # The recommendation stays withheld either way: these are verified
+            # inputs, not an underwriting conclusion.
+            def _fig(*names):
+                for n in names:
+                    v = extracted_pdf_data.get(n)
+                    if isinstance(v, (int, float)) and v:
+                        return f"Rs {v / 10_000_000:,.2f} Cr" if abs(v) >= 10_000_000 \
+                            else f"Rs {v / 100_000:,.2f} L"
+                    if isinstance(v, str) and v.strip() and v.strip().upper() not in ("N/A", "UNKNOWN"):
+                        return v.strip()
+                return "NOT AVAILABLE"
+
+            _extracted_note = (
+                "Credit narrative could not be generated because the AI provider "
+                "was unavailable. The figures shown were read directly from the "
+                "statement and each is traceable to its source line; they have "
+                "not been interpreted into a recommendation."
+            )
+
             return {
                 "document_control": {"borrower_name": extracted_pdf_data.get("company_name", "Unknown"), "status": "ERROR"},
-                "executive_summary": {"industry": "UNKNOWN", "revenue": "N/A", "ebitda": "N/A", "pat": "N/A", "strengths": [], "key_concerns": ["SYSTEM ERROR"], "critical_conditions": []},
-                "borrower_profile": {"legal_name": extracted_pdf_data.get("company_name", "Unknown"), "business_activity": "N/A"},
+                "executive_summary": {
+                    "industry": _fig("sector", "industry"),
+                    "revenue": _fig("total_revenue"),
+                    "ebitda": _fig("ebitda"),
+                    "pat": _fig("pat"),
+                    "net_worth": _fig("shareholder_equity"),
+                    "total_debt": _fig("total_debt"),
+                    "strengths": [],
+                    "key_concerns": ["Credit narrative unavailable - AI provider did not respond"],
+                    "critical_conditions": [_extracted_note],
+                },
+                "borrower_profile": {"legal_name": extracted_pdf_data.get("company_name", "Unknown"), "business_activity": _fig("sector", "industry")},
                 "facility": {"facility_type": "N/A", "requested_amount": "N/A", "tenor": "N/A", "security": "N/A"},
                 "management": {"key_personnel": [], "experience": "N/A"},
                 "business": {"model": "N/A", "market": "N/A"},
@@ -407,6 +465,10 @@ class CAMGeneratorAgent:
                 "decision": "MANUAL REVIEW",
                 "recommended_loan_amount": "Withheld",
                 "recommended_interest_rate": "TBD",
-                "decision_rationale": f"System encountered an error during synthesis. Escalate for human validation."
+                "decision_rationale": (
+                    "Credit narrative synthesis did not complete, so no recommendation "
+                    "has been produced. The extracted financial figures above stand on "
+                    "their own evidence and can be reviewed manually."
+                ),
             }
 
