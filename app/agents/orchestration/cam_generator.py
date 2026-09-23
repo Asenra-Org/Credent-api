@@ -196,7 +196,26 @@ class CAMGeneratorAgent:
         # allowing us to salvage truncated JSONs when Sarvam hits output limits.
         self.structured_llm = None
 
-    def _build_prompt(self):
+    # sarvam-105b stops at 16,384 output tokens. The provider accepts
+    # max_tokens of 32768 and 65536, but across every recorded call none ever
+    # produced more than 16,384 and four consecutive CAMs terminated exactly
+    # there with finish_reason="length". The ceiling is the model's, not the
+    # request's, so raising max_tokens achieved nothing.
+    #
+    # A nineteen-section memorandum plus a reasoning model's overhead does not
+    # fit in that budget, so it is written in two passes, split where a credit
+    # memo naturally divides: what the documents say, then what it means.
+    FACTUAL_SECTIONS = (
+        "document_control", "executive_summary", "borrower_profile", "facility",
+        "management", "business", "financial_analysis", "ratios",
+    )
+    JUDGEMENT_SECTIONS = (
+        "cross_document_verification", "banking_analysis", "tax_analysis",
+        "collateral", "five_cs", "risk_assessment", "positive_indicators",
+        "red_flags", "information_gaps", "recommendation", "evidence_register",
+    )
+
+    def _build_prompt(self, sections=None, prior=None):
         # The schema is derived from the Pydantic model, never read from a file.
         # A file-based template briefly replaced this line and broke every CAM:
         # it was an absolute path into one developer's scratch directory - absent
@@ -212,10 +231,56 @@ class CAMGeneratorAgent:
         # instance conveys the identical shape in 2,593 and reads as a form
         # to fill in. That budget is the difference between a complete CAM
         # and one truncated at "financial_analysis".
-        schema_json = json.dumps(CAMDocument().model_dump(), indent=2).replace("{", "{{").replace("}", "}}")
+        blank = CAMDocument().model_dump()
+        if sections:
+            blank = {k: blank[k] for k in sections if k in blank}
+        schema_json = json.dumps(blank, indent=2).replace("{", "{{").replace("}", "}}")
+
+        # Directive 6 instructs the model to populate five_cs. Sending it to a
+        # pass whose template has no five_cs field is a contradiction, and a
+        # model told to produce a section it was also told to omit will spend
+        # output tokens on it - the exact budget this split exists to protect.
+        five_cs_directive = ""
+        if sections is None or "five_cs" in sections:
+            five_cs_directive = (
+                "6. THE FIVE Cs ARE ANALYSIS, NOT EXTRACTION. The five_cs section is your own"
+                + chr(10) + "               professional credit judgement derived from the financial data supplied, so"
+                + chr(10) + "               directive 1 does not apply to it. You MUST populate all five (character,"
+                + chr(10) + "               capacity, capital, collateral, conditions). For each one give:"
+                + chr(10) + "                 - evidence: the specific figures you reasoned from"
+                + chr(10) + "                 - assessment: your underwriting conclusion in one or two sentences"
+                + chr(10) + "                 - risk_implication: what it means for repayment risk"
+                + chr(10) + "               Derive capacity from revenue against debt servicing, capital from"
+                + chr(10) + "               shareholder equity and gearing, and conditions from the sector and macro"
+                + chr(10) + "               context. Do not write \"NOT PROVIDED\" in five_cs when financial figures"
+                + chr(10) + "               have been supplied; if collateral is genuinely absent, say so and state"
+                + chr(10) + "               the risk of unsecured exposure rather than leaving it blank."
+            )
+
+        scope_parts = []
+        if sections:
+            scope_parts.append(
+                "THIS PASS: produce ONLY the sections present in the JSON "
+                "below. Do not emit any other section - another pass writes "
+                "those, and duplicating them spends the output budget this "
+                "pass needs."
+            )
+        if prior:
+            # The judgement pass reads the factual pass rather than the raw
+            # extraction, so its conclusions rest on the same figures the
+            # reader sees above them instead of being re-derived.
+            established = json.dumps(prior, indent=2)[:4000]
+            established = established.replace("{", "{{").replace("}", "}}")
+            scope_parts.append(
+                "ALREADY ESTABLISHED (reason from this, do not restate it):"
+                + chr(10) + established
+            )
+        scope = (chr(10) + "            ").join(scope_parts)
+
         return ChatPromptTemplate.from_messages([
             ("system", f"""You are the Senior Chief Credit Officer at an institutional bank.
             Your task is to synthesize the provided evidence into a PROFESSIONAL, BANKING-GRADE Credit Appraisal Memorandum (CAM).
+            {scope}
             
             CRITICAL DIRECTIVES:
             1. DO NOT INVENT DATA. If a value is missing, use "NOT PROVIDED", "NOT COMPUTABLE", or "MISSING".
@@ -223,18 +288,7 @@ class CAMGeneratorAgent:
             3. EVIDENCE TRACEABILITY: Add 1 or 2 items to the evidence_register to prove key numbers. ALL VALUES MUST BE STRINGS WITH QUOTES (e.g. "1.2", "Page 2"). DO NOT output raw integers or floats.
             4. If the Composite Risk Score < 60, the decision MUST be REJECT.
             5. If there are severe missing gaps, decision MUST be MANUAL REVIEW or REWORK.
-            6. THE FIVE Cs ARE ANALYSIS, NOT EXTRACTION. The five_cs section is your own
-               professional credit judgement derived from the financial data supplied, so
-               directive 1 does not apply to it. You MUST populate all five (character,
-               capacity, capital, collateral, conditions). For each one give:
-                 - evidence: the specific figures you reasoned from
-                 - assessment: your underwriting conclusion in one or two sentences
-                 - risk_implication: what it means for repayment risk
-               Derive capacity from revenue against debt servicing, capital from shareholder
-               equity and gearing, and conditions from the sector and macro context. Do not
-               write "NOT PROVIDED" in five_cs whenever financial figures have been supplied;
-               if collateral is genuinely absent, say so and state the risk of unsecured
-               exposure rather than leaving it blank.
+            {five_cs_directive}
             7. EXECUTIVE SUMMARY FINANCIALS: The pdf_data contains fields: total_revenue, ebitda, pat, total_debt, shareholder_equity.
                - Map total_revenue → executive_summary.revenue
                - Map ebitda → executive_summary.ebitda  
@@ -267,8 +321,60 @@ class CAMGeneratorAgent:
         try: return json.loads(repair_json(text))
         except: raise ValueError("No JSON found")
 
-    async def generate_cam(self, extracted_pdf_data: dict, integrity_flags: dict, web_research: dict, final_score: int, ingestion_citations: dict = None) -> dict:
-        prompt = self._build_prompt()
+    async def generate_cam(self, extracted_pdf_data: dict, integrity_flags: dict,
+                           web_research: dict, final_score: int,
+                           ingestion_citations: dict = None) -> dict:
+        """Produce the CAM in two passes and merge them.
+
+        If the factual pass fails there is nothing to interpret and its error
+        result stands. If only the judgement pass fails, the factual half is
+        kept and the recommendation is withheld: a memorandum carrying verified
+        figures and no conclusion is useful to an underwriter, and is far better
+        than a conclusion resting on nothing.
+        """
+        factual = await self._generate_cam_pass(
+            extracted_pdf_data, integrity_flags, web_research, final_score,
+            ingestion_citations, sections=self.FACTUAL_SECTIONS, label="factual",
+        )
+        if self._pass_failed(factual):
+            return factual
+
+        judgement = await self._generate_cam_pass(
+            extracted_pdf_data, integrity_flags, web_research, final_score,
+            ingestion_citations, sections=self.JUDGEMENT_SECTIONS,
+            label="judgement", prior=factual,
+        )
+
+        if self._pass_failed(judgement):
+            print("[CAM] judgement pass did not complete; factual sections kept "
+                  "and the recommendation withheld")
+            factual["decision"] = "MANUAL REVIEW"
+            factual["decision_rationale"] = (
+                "The factual sections were produced and every figure in them is "
+                "traceable to its source. The credit judgement sections did not "
+                "complete, so no recommendation has been made."
+            )
+            factual["recommended_loan_amount"] = "Withheld"
+            return factual
+
+        merged = dict(factual)
+        merged.update(judgement)
+        print(f"[CAM] both passes complete | {len(merged)} sections")
+        return merged
+
+    @staticmethod
+    def _pass_failed(data: dict) -> bool:
+        """The error fallback marks document_control.status ERROR; that is the signal."""
+        control = (data or {}).get("document_control") or {}
+        return str(control.get("status", "")).upper() == "ERROR"
+
+    async def _generate_cam_pass(self, extracted_pdf_data: dict, integrity_flags: dict,
+                                 web_research: dict, final_score: int,
+                                 ingestion_citations: dict = None,
+                                 sections=None, label: str = "cam",
+                                 prior: dict = None) -> dict:
+        print(f"[CAM] pass '{label}' | {len(sections or ())} sections requested")
+        prompt = self._build_prompt(sections=sections, prior=prior)
         invoke_params = {
             "pdf_data": json.dumps(extracted_pdf_data)[:3000], # Trucate to prevent massive context overflow breaking small models
             "integrity_data": json.dumps(integrity_flags),

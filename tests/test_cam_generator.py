@@ -142,7 +142,12 @@ async def test_generate_cam_pipeline_success(cam_agent):
 
     assert result["decision"] == "REJECT"
     assert result["decision_rationale"] == "Score under 60."
-    mock_ainvoke.assert_called_once()
+
+    # Two calls, not one. The memorandum is written in two passes because
+    # sarvam-105b stops at 16,384 output tokens and nineteen sections plus a
+    # reasoning model's overhead do not fit; asserting a single call would pin
+    # the truncation this split exists to remove.
+    assert mock_ainvoke.call_count == 2, "one pass per half of the document"
 
 
 @pytest.mark.asyncio
