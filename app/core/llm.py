@@ -203,11 +203,18 @@ SARVAM_BASE_URL = "https://api.sarvam.ai/v1"
 SARVAM_MODEL = "sarvam-105b"
 
 # sarvam-105b is a reasoning model: it spends output tokens thinking before it
-# writes anything into `content`. A CAM-sized answer needs room for both. At
-# 4096 the reasoning alone consumed the entire budget and every response came
-# back with content="" - the model never reached its answer. This is the floor
-# for the whole pipeline; do not lower it below the cost of reasoning.
-DEFAULT_MAX_TOKENS = 16384
+# writes anything into `content`. A CAM-sized answer needs room for both.
+#
+# Measured, not guessed. At 4096 the reasoning alone consumed the whole budget
+# and every response came back with content="" - the model never reached its
+# answer. At 16384 the CAM got as far as 11,938 characters and was still cut
+# off mid-document. The provider accepts 32768 and 65536, so the ceiling was
+# the binding constraint, not the model.
+#
+# This is a ceiling, not a spend: only tokens actually generated are billed. A
+# ceiling set too low is the expensive setting, because the truncated call is
+# billed in full and returns nothing usable.
+DEFAULT_MAX_TOKENS = 32768
 
 
 def configured_max_tokens() -> int:
