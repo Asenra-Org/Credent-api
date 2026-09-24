@@ -126,40 +126,51 @@ class TestMixedBorrowersAreRefused:
         """The case is failed with a reason, not appraised into fiction."""
         import app.services.appraisal_worker as worker
 
-        a = tmp_path / "a.pdf"
-        b = tmp_path / "b.pdf"
-        a.write_text("x")
-        b.write_text("x")
+        recorded = {}
 
-        statuses = {}
-        monkeypatch.setattr(worker, "update_case_status", lambda *a, **k: None,
-                            raising=False)
-
-        def _status(case_id, status, current_step=None, error_message=None):
-            statuses["status"] = status
-            statuses["step"] = current_step
-            statuses["error"] = error_message
+        def _status(case_id, status, current_step=None):
+            recorded["status"] = status
+            recorded["step"] = current_step
 
         def _result(case_id, payload, status=None):
-            statuses.setdefault("results", []).append(payload)
+            recorded.setdefault("payloads", []).append(payload)
 
         monkeypatch.setattr("app.database.database.update_case_status", _status)
         monkeypatch.setattr("app.database.database.update_case_result", _result)
+        # download_document returns the document's bytes, not a path.
         monkeypatch.setattr("app.services.storage_service.download_document",
-                            lambda handle: handle)
+                            lambda handle: b"%PDF-1.3 stub")
         monkeypatch.setattr(
             "app.parsers.document_set.merge_pdfs",
             lambda paths: merge({"a.pdf": BALANCE_SHEET, "b.pdf": OTHER_BORROWER}),
         )
 
         out = asyncio.run(worker.run_case_appraisal_job(
-            case_id="case-mixed", storage_paths=[str(a), str(b)],
+            case_id="case-mixed", storage_paths=["h1", "h2"],
             document_names=["a.pdf", "b.pdf"], institution_id="org-1",
         ))
 
         assert out["status"] == "failed"
-        assert statuses["step"] == "entity_mismatch"
-        assert "more than one company" in statuses["error"]
+        assert recorded["status"] == "FAILED"
+        assert recorded["step"] == "entity_mismatch"
+
+        # update_case_status carries no reason field, so the reason must reach
+        # the case result - that is what GET /ingest/status returns, and a
+        # failure the analyst cannot read is a failure they cannot act on.
+        reasons = [p.get("error") for p in recorded["payloads"] if p.get("error")]
+        assert any("more than one company" in r for r in reasons)
+
+    def test_reporting_a_failure_never_raises(self, monkeypatch):
+        """A failing failure-handler hides the original error behind its own."""
+        import app.services.appraisal_worker as worker
+
+        def _boom(*a, **k):
+            raise RuntimeError("database unavailable")
+
+        monkeypatch.setattr("app.database.database.update_case_status", _boom)
+        monkeypatch.setattr("app.database.database.update_case_result", _boom)
+
+        worker._fail_case("case-x", "worker_error", "something went wrong")
 
 
 class TestTheEndpointAnswersImmediately:

@@ -271,6 +271,26 @@ def _extract_extension(storage_path_handle: str) -> str:
     return ext if ext else ".pdf"
 
 
+def _fail_case(case_id: str, step: str, reason: str) -> None:
+    """Record why a case failed where the client can read it.
+
+    update_case_status carries no reason field, so the reason goes into the
+    case result, which is what GET /ingest/status returns. Both writes are
+    guarded: a failure being reported must not itself raise, or the original
+    error is lost behind a second one.
+    """
+    from app.database.database import update_case_result, update_case_status
+
+    try:
+        update_case_result(case_id, {"error": reason}, status="FAILED")
+    except Exception:
+        logger.warning("[CASE %s] could not persist the failure reason", case_id)
+    try:
+        update_case_status(case_id, "FAILED", current_step=step)
+    except Exception:
+        logger.warning("[CASE %s] could not mark the case failed", case_id)
+
+
 async def run_case_appraisal_job(
     case_id: str,
     storage_paths: list,
@@ -294,6 +314,7 @@ async def run_case_appraisal_job(
     two stated revenues is an underwriting judgement, not a parsing decision.
     """
     import os
+    import tempfile
 
     from app.database.database import update_case_result, update_case_status
     from app.parsers.document_set import merge_pdfs
@@ -307,7 +328,12 @@ async def run_case_appraisal_job(
     try:
         for name, handle in zip(names, storage_paths):
             try:
-                path = download_document(handle)
+                # download_document returns bytes; the agents take file paths.
+                file_bytes = download_document(handle)
+                suffix = os.path.splitext(name)[1] or ".pdf"
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as fh:
+                    fh.write(file_bytes)
+                    path = fh.name
                 temp_files.append(path)
                 local[name] = path
             except Exception as exc:
@@ -315,8 +341,8 @@ async def run_case_appraisal_job(
                                case_id, name, type(exc).__name__)
 
         if not local:
-            update_case_status(case_id, "FAILED", current_step="no_documents_readable",
-                               error_message="No document in this case could be read.")
+            _fail_case(case_id, "no_documents_readable",
+                       "No document in this case could be read.")
             return {"status": "failed", "case_id": case_id}
 
         document_set = merge_pdfs(local)
@@ -330,12 +356,11 @@ async def run_case_appraisal_job(
         # fiction, which is the worst failure available here.
         if document_set.entity_mismatch:
             named = "; ".join(f"{d} names {e}" for d, e in document_set.entities.items())
-            update_case_status(
-                case_id, "FAILED", current_step="entity_mismatch",
-                error_message=("These documents name more than one company: "
-                               + named + ". A case must hold one borrower's documents."),
-            )
-            update_case_result(case_id, {"document_set": summary}, status="FAILED")
+            reason = ("These documents name more than one company: " + named
+                      + ". A case must hold one borrower's documents.")
+            update_case_result(case_id, {"document_set": summary, "error": reason},
+                               status="FAILED")
+            _fail_case(case_id, "entity_mismatch", reason)
             return {"status": "failed", "case_id": case_id, "document_set": summary}
 
         extracted = _extraction_from_document_set(document_set)
@@ -369,8 +394,7 @@ async def run_case_appraisal_job(
 
     except Exception as exc:
         logger.exception("[CASE %s] appraisal failed", case_id)
-        update_case_status(case_id, "FAILED", current_step="worker_error",
-                           error_message=f"{type(exc).__name__}: {exc}")
+        _fail_case(case_id, "worker_error", f"{type(exc).__name__}: {exc}")
         return {"status": "failed", "case_id": case_id, "error": str(exc)}
     finally:
         for path in temp_files:

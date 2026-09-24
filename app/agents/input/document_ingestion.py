@@ -1008,6 +1008,41 @@ class DocumentIngestionAgent:
             try:
                 parse_result = parse_schedule_iii(raw_text)
                 deterministic = to_extraction_payload(parse_result, raw_text)
+
+                # When the statement yielded its headline figures, the provider
+                # call that would follow adds narrative and costs a full
+                # reasoning-model request - roughly a minute and several
+                # thousand tokens - for fields no credit decision rests on.
+                # Skipping it is the whole point of parsing first: until now the
+                # deterministic pass bought resilience against an outage but not
+                # a single rupee, because the LLM ran regardless.
+                #
+                # Narrative still comes from the model everywhere it is the only
+                # source: a scanned document, a non-statutory format, or a
+                # statement missing its core lines.
+                if deterministic and carried_the_document(parse_result):
+                    print(
+                        f"[PARSE] Deterministic pass carried the document "
+                        f"({len(deterministic)} field(s)); the extraction "
+                        f"provider call was skipped."
+                    )
+                    complete = DEFAULT_EXTRACTION.copy()
+                    complete["citations"] = DEFAULT_EXTRACTION["citations"].copy()
+                    det_citations = dict(deterministic.pop("citations", None) or {})
+                    complete.update(deterministic)
+                    if det_citations:
+                        complete["citations"] = det_citations
+                    complete["extraction_degraded"] = False
+                    complete["degradation_reason"] = None
+                    complete["extraction_method"] = "deterministic"
+                    complete["legal_risks"] = []
+                    complete["qualitative_notes"] = (
+                        "Figures were read directly from the statement under "
+                        "Schedule III and each is traceable to its source line. "
+                        "No narrative was generated for this document."
+                    )
+                    return complete
+
                 if deterministic:
                     print(
                         f"[PARSE] Deterministic pass matched {len(deterministic)} field(s) "
