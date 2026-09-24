@@ -55,6 +55,19 @@ class TaskTransport(ABC):
         Dispatch an appraisal job for the given case.
         Must return immediately without waiting for completion.
         """
+
+    def dispatch_case(self, case_id: str, storage_paths: list,
+                      document_names: list, institution_id: str) -> None:
+        """Dispatch one appraisal over a borrower's whole document set.
+
+        Separate from dispatch() because the unit of work is different: one
+        case built from many documents, not one case per document. The default
+        implementation falls back to the single-document path so a transport
+        that has not been taught the difference still runs something rather
+        than silently dropping the case.
+        """
+        if storage_paths:
+            self.dispatch(case_id, storage_paths[0], institution_id)
         ...
 
 
@@ -78,6 +91,17 @@ class BackgroundTaskAdapter(TaskTransport):
     def __init__(self, background_tasks: BackgroundTasks):
         self._background_tasks = background_tasks
 
+    def dispatch_case(self, case_id: str, storage_paths: list,
+                      document_names: list, institution_id: str) -> None:
+        """Register one appraisal over the whole document set."""
+        self._background_tasks.add_task(
+            _run_case_in_background,
+            case_id=case_id,
+            storage_paths=storage_paths,
+            document_names=document_names,
+            institution_id=institution_id,
+        )
+
     def dispatch(self, case_id: str, storage_path: str, institution_id: str) -> None:
         """Register the appraisal job to run after the HTTP response is sent."""
         self._background_tasks.add_task(
@@ -87,6 +111,33 @@ class BackgroundTaskAdapter(TaskTransport):
             institution_id=institution_id
         )
         logger.info(f"[BackgroundTaskAdapter] ✓ Dispatched case_id={case_id} via BackgroundTasks")
+
+
+def _run_case_in_background(case_id: str, storage_paths: list,
+                            document_names: list, institution_id: str) -> None:
+    """Sync wrapper around the multi-document worker.
+
+    BackgroundTasks runs in a thread pool with no event loop, so one is created
+    here. Any failure is logged and swallowed: the worker has already marked the
+    case FAILED with a reason, and re-raising into the thread pool would only
+    produce an untraceable stack trace after the client has been answered.
+    """
+    from app.services.appraisal_worker import run_case_appraisal_job
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(run_case_appraisal_job(
+                case_id=case_id, storage_paths=storage_paths,
+                document_names=document_names, institution_id=institution_id,
+            ))
+        finally:
+            loop.close()
+    except Exception as e:
+        logger.error(
+            f"[BackgroundTaskAdapter] Unhandled error in case job case_id={case_id}: {e}",
+            exc_info=True,
+        )
 
 
 def _run_job_in_background(case_id: str, storage_path: str, institution_id: str) -> None:

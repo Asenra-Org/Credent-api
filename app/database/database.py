@@ -1486,6 +1486,65 @@ def get_case_appraisal(case_id, tenant_id):
     return record
 
 
+def record_case_document(case_id, filename, storage_path, tenant_id,
+                         doc_type=None, size_bytes=None, uploaded_by=None):
+    """Attach one document to a case.
+
+    The write is idempotent on (case_id, filename): re-uploading a document
+    under the same name into the same case replaces its row rather than adding
+    a duplicate, because a case listing two "balance_sheet.pdf" entries tells a
+    credit officer nothing useful about which one was read.
+    """
+    import uuid as _uuid
+
+    conn = get_app_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id FROM case_documents WHERE case_id = ? AND filename = ? AND tenant_id = ?",
+            (case_id, filename, tenant_id),
+        )
+        row = cursor.fetchone()
+        if row:
+            cursor.execute(
+                """UPDATE case_documents
+                   SET storage_path = ?, doc_type = ?, size_bytes = ?,
+                       status = 'PENDING', updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ?""",
+                (storage_path, doc_type, size_bytes, row[0]),
+            )
+            document_id = row[0]
+        else:
+            document_id = _uuid.uuid4().hex
+            cursor.execute(
+                """INSERT INTO case_documents
+                   (id, case_id, tenant_id, filename, doc_type, storage_path,
+                    size_bytes, status, uploaded_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)""",
+                (document_id, case_id, tenant_id, filename, doc_type,
+                 storage_path, size_bytes, uploaded_by),
+            )
+        conn.commit()
+        return document_id
+    finally:
+        conn.close()
+
+
+def update_case_document_status(document_id, status, error_code=None):
+    """Mark one document read, skipped or failed after the worker has seen it."""
+    conn = get_app_connection()
+    try:
+        conn.cursor().execute(
+            """UPDATE case_documents
+               SET status = ?, error_code = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (status, error_code, document_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def list_case_documents(case_id, tenant_id):
     """Documents attached to a case, tenant-scoped.
 

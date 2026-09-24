@@ -390,6 +390,141 @@ async def get_case_status(case_id: str, tenant_id: str = Depends(get_current_ten
 # ASE-52: Batch Ingestion Endpoint — Async Queue + Supabase Storage
 # =============================================================================
 
+@router.post(
+    "/ingest/case",
+    dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN"])),
+                 Depends(rate_limit("expensive_ai"))],
+)
+async def ingest_borrower_case(
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(...),
+    institution_id: str = Form(default="DEFAULT"),
+    tenant_id: str = Depends(get_current_tenant),
+):
+    """Appraise one borrower's documents as a single case.
+
+    A lender sends a folder, not a file: audited financials, a P&L, GST
+    returns, an ITR, KYC. Those are one borrower and one credit decision.
+    ``/ingest/batch`` treats each file as its own case, which costs one
+    appraisal per document and makes cross-document reconciliation impossible -
+    a figure can only be checked against a second source when both are in the
+    same run.
+
+    This returns as soon as the documents are stored. The appraisal takes
+    minutes, and holding an HTTP request open for it is how the client ends up
+    timing out on work the server actually completed. Poll
+    ``GET /ingest/status/{case_id}``.
+    """
+    from app.database.database import create_case, record_case_document
+    from app.services.storage_service import upload_document
+    from app.services.task_dispatcher import get_dispatcher
+
+    if institution_id != "DEFAULT" and institution_id != tenant_id:
+        raise HTTPException(status_code=403, detail="institution_id mismatch with authenticated tenant")
+    institution_id = tenant_id
+
+    MAX_FILES = 10
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided.")
+    if len(files) > MAX_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"A case may hold at most {MAX_FILES} documents. Received {len(files)}.",
+        )
+
+    case_id = uuid.uuid4().hex
+    accepted, rejected = [], []
+
+    for file in files:
+        name = os.path.basename(file.filename or "").replace("..", "").replace("/", "").replace("\\", "")
+        if not name:
+            rejected.append({"document": "unnamed", "reason": "missing filename"})
+            continue
+        if not name.lower().endswith(".pdf"):
+            rejected.append({"document": name, "reason": "only PDF documents can be appraised"})
+            continue
+
+        content = await file.read()
+        if not content:
+            rejected.append({"document": name, "reason": "file is empty"})
+            continue
+        if len(content) > MAX_FILE_SIZE:
+            rejected.append({
+                "document": name,
+                "reason": f"exceeds the {MAX_FILE_SIZE // (1024 * 1024)}MB limit",
+            })
+            continue
+
+        # The security scan reads and parses the file, so it is offloaded - on
+        # the event loop it blocks every other request including /auth/refresh,
+        # which the client then reads as a dead session.
+        tmp = os.path.join("temp_uploads", f"{uuid.uuid4().hex}_{name}")
+        try:
+            with open(tmp, "wb") as fh:
+                fh.write(content)
+            scan = await asyncio.to_thread(DocumentSecurityAgent.scan_file, tmp)
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+        if not scan.is_safe:
+            rejected.append({"document": name,
+                             "reason": f"failed security validation: {', '.join(scan.flags)}"})
+            continue
+
+        storage_path = upload_document(
+            file_bytes=content, original_filename=name,
+            tenant_id=institution_id.lower().replace(" ", "_"),
+        )
+        accepted.append({"document": name, "storage_path": storage_path})
+
+    if not accepted:
+        # Nothing usable arrived. Creating a case that can never be appraised
+        # would leave a permanently pending row and a client polling forever.
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "No appraisable document in this upload.",
+                    "rejected": rejected},
+        )
+
+    create_case(
+        case_id,
+        {"original_filename": accepted[0]["document"],
+         "document_count": len(accepted)},
+        institution_id=institution_id,
+    )
+    for item in accepted:
+        try:
+            record_case_document(case_id, item["document"], item["storage_path"],
+                                 tenant_id=institution_id)
+        except Exception as exc:
+            # The document is stored and will still be appraised; only the
+            # index row failed. Losing the case over bookkeeping would be worse.
+            print(f"[CASE] could not index {item['document']}: {type(exc).__name__}")
+
+    dispatcher = get_dispatcher(background_tasks)
+    dispatcher.dispatch_case(
+        case_id=case_id,
+        storage_paths=[i["storage_path"] for i in accepted],
+        document_names=[i["document"] for i in accepted],
+        institution_id=institution_id,
+    )
+
+    return {
+        "status": "accepted",
+        "case_id": case_id,
+        "documents": [i["document"] for i in accepted],
+        "rejected": rejected,
+        "poll": f"/api/v1/documents/ingest/status/{case_id}",
+        "message": (
+            f"{len(accepted)} document(s) accepted as one case. "
+            "The appraisal runs in the background; poll for its status."
+        ),
+    }
+
+
 @router.post("/ingest/batch", dependencies=[Depends(require_role(["CREDIT_ANALYST", "UNDERWRITING_MANAGER", "ORG_ADMIN"])), Depends(rate_limit("expensive_ai"))])
 async def ingest_batch_documents(
     background_tasks: BackgroundTasks,

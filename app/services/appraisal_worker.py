@@ -269,3 +269,169 @@ def _extract_extension(storage_path_handle: str) -> str:
     path = storage_path_handle.split("://", 1)[-1]
     ext = os.path.splitext(path)[1]
     return ext if ext else ".pdf"
+
+
+async def run_case_appraisal_job(
+    case_id: str,
+    storage_paths: list,
+    document_names: list = None,
+    institution_id: str = "DEFAULT",
+) -> dict:
+    """Appraise one borrower's documents as a single case.
+
+    A lender's folder is one borrower and one credit decision. Running an
+    appraisal per file costs once per document and, more importantly, makes
+    reconciliation impossible: a figure can only be checked against a second
+    source when both are read in the same run.
+
+    The documents are parsed deterministically and merged first, and the merged
+    extraction is written to the case before the coordinator starts. That is the
+    existing resume hook - the coordinator reuses persisted ingestion data
+    rather than re-reading one file - so the whole set reaches the analysis
+    agents instead of only the first document.
+
+    Conflicts between documents are recorded, never resolved. Choosing between
+    two stated revenues is an underwriting judgement, not a parsing decision.
+    """
+    import os
+
+    from app.database.database import update_case_result, update_case_status
+    from app.parsers.document_set import merge_pdfs
+    from app.services.storage_service import download_document
+
+    names = document_names or [f"document_{i + 1}.pdf" for i in range(len(storage_paths))]
+    update_case_status(case_id, "RUNNING", current_step="reading_documents")
+
+    local = {}
+    temp_files = []
+    try:
+        for name, handle in zip(names, storage_paths):
+            try:
+                path = download_document(handle)
+                temp_files.append(path)
+                local[name] = path
+            except Exception as exc:
+                logger.warning("[CASE %s] %s could not be retrieved: %s",
+                               case_id, name, type(exc).__name__)
+
+        if not local:
+            update_case_status(case_id, "FAILED", current_step="no_documents_readable",
+                               error_message="No document in this case could be read.")
+            return {"status": "failed", "case_id": case_id}
+
+        document_set = merge_pdfs(local)
+        summary = document_set.summary()
+        logger.info("[CASE %s] %s document(s) read, %s figures, %s conflict(s)",
+                    case_id, summary["documents_read"], summary["figures_matched"],
+                    len(summary["conflicts"]))
+
+        # A folder holding two borrowers must not become one confident picture.
+        # Every figure in it would be individually traceable and the whole of it
+        # fiction, which is the worst failure available here.
+        if document_set.entity_mismatch:
+            named = "; ".join(f"{d} names {e}" for d, e in document_set.entities.items())
+            update_case_status(
+                case_id, "FAILED", current_step="entity_mismatch",
+                error_message=("These documents name more than one company: "
+                               + named + ". A case must hold one borrower's documents."),
+            )
+            update_case_result(case_id, {"document_set": summary}, status="FAILED")
+            return {"status": "failed", "case_id": case_id, "document_set": summary}
+
+        extracted = _extraction_from_document_set(document_set)
+        update_case_result(
+            case_id,
+            {"extracted_data": extracted, "document_set": summary},
+            status="RUNNING",
+        )
+
+        primary = _primary_document(document_set, local)
+        update_case_status(case_id, "RUNNING", current_step="coordinator_running")
+
+        from app.agents.input.document_ingestion import DocumentIngestionAgent
+        from app.agents.orchestration.coordinator import AgentCoordinator
+
+        coordinator = AgentCoordinator(ingestion_agent=DocumentIngestionAgent())
+        result = await coordinator.run_appraisal_with_state(
+            {"file_path": primary, "institution_id": institution_id},
+            case_id=case_id,
+        )
+
+        if isinstance(result, dict):
+            result["document_set"] = summary
+            _persist_appraisal(result, case_id, institution_id, coordinator=coordinator)
+            update_case_result(case_id, {"document_set": summary}, status="RUNNING")
+
+        update_case_status(case_id, "COMPLETED", current_step="done")
+        if isinstance(result, dict):
+            return result
+        return {"status": "completed", "case_id": case_id}
+
+    except Exception as exc:
+        logger.exception("[CASE %s] appraisal failed", case_id)
+        update_case_status(case_id, "FAILED", current_step="worker_error",
+                           error_message=f"{type(exc).__name__}: {exc}")
+        return {"status": "failed", "case_id": case_id, "error": str(exc)}
+    finally:
+        for path in temp_files:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def _extraction_from_document_set(document_set) -> dict:
+    """Shape a merged set like the ingestion agent's extraction payload.
+
+    Only fields the documents genuinely established are filled. Conflicts ride
+    along so the appraisal can report them; they are never silently resolved.
+    """
+    from app.agents.input.document_ingestion import DEFAULT_EXTRACTION
+
+    extracted = DEFAULT_EXTRACTION.copy()
+
+    direct = {
+        "total_revenue": document_set.value("total_revenue"),
+        "current_assets": document_set.value("current_assets"),
+        "pat": document_set.value("pat"),
+        "ebitda": document_set.ebitda(),
+        "total_debt": document_set.total_debt(),
+        "shareholder_equity": document_set.equity(),
+        "current_liabilities": document_set.current_liabilities(),
+    }
+    for key, value in direct.items():
+        if value is not None:
+            extracted[key] = value
+
+    if document_set.borrower:
+        extracted["company_name"] = document_set.borrower
+
+    extracted["citations"] = document_set.citations()
+    extracted["document_conflicts"] = [c.to_dict() for c in document_set.conflicts]
+    extracted["extraction_method"] = "deterministic_document_set"
+
+    # Figures read from a document line are not a degraded extraction, whatever
+    # the provider does afterwards.
+    if document_set.figures:
+        extracted["extraction_degraded"] = False
+        extracted["degradation_reason"] = None
+        extracted["legal_risks"] = []
+        extracted["qualitative_notes"] = (
+            f"Figures read from {len(document_set.parsed)} document(s) under "
+            "Schedule III; each is traceable to its source line."
+        )
+    return extracted
+
+
+def _primary_document(document_set, local_paths: dict) -> str:
+    """The document with the most matched figures.
+
+    The coordinator still takes one file_path for the steps that need raw text.
+    The richest statement is the most useful one to hand it; the merged
+    extraction already written to the case is what the analysis agents consume.
+    """
+    if document_set.parsed:
+        best = max(document_set.parsed.items(), key=lambda kv: len(kv[1].figures))
+        if best[0] in local_paths:
+            return local_paths[best[0]]
+    return next(iter(local_paths.values()))
