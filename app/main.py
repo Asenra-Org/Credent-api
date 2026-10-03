@@ -112,7 +112,8 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
         "https://cresem.asenra.in",
-        "https://app.cresem.asenra.in"
+        "https://app.cresem.asenra.in",
+        "https://credent-web.vercel.app"
     ],
     allow_credentials=True,
     allow_methods=["*"],
