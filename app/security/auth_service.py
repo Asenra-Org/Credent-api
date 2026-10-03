@@ -114,8 +114,11 @@ def create_session(user_id: str, ip_address: str = None, user_agent: str = None,
         
     return session_id, raw_token
 
-def revoke_session(session_id: str):
-    conn = get_auth_connection()
+def revoke_session(session_id: str, conn=None):
+    close_conn = False
+    if conn is None:
+        conn = get_auth_connection()
+        close_conn = True
     try:
         cursor = conn.cursor()
         now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
@@ -126,7 +129,8 @@ def revoke_session(session_id: str):
         """, (now, session_id))
         conn.commit()
     finally:
-        conn.close()
+        if close_conn:
+            conn.close()
 
 # 3. ACCOUNT LOCKOUT
 
@@ -255,7 +259,8 @@ def enroll_mfa(user_id: str, email: str) -> str:
         cursor.execute("UPDATE users SET mfa_secret = ? WHERE id = ?", (secret, user_id))
         conn.commit()
     finally:
-        conn.close()
+        if close_conn:
+            conn.close()
         
     totp = pyotp.TOTP(secret)
     return totp.provisioning_uri(name=email, issuer_name="Credent")
@@ -332,5 +337,6 @@ def disable_mfa(user_id: str):
         cursor.execute("UPDATE sessions SET is_revoked = 1, revoked_at = ? WHERE user_id = ?", (now, user_id))
         conn.commit()
     finally:
-        conn.close()
+        if close_conn:
+            conn.close()
 

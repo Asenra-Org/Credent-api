@@ -238,7 +238,7 @@ def logout(request: Request, response: Response):
             cursor.execute("SELECT id FROM sessions WHERE refresh_token_hash = ?", (token_hash,))
             row = cursor.fetchone()
             if row:
-                revoke_session(row[0])
+                revoke_session(row[0], conn=conn)
         finally:
             conn.close()
 
