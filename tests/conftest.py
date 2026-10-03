@@ -31,6 +31,7 @@ from app.main import app
 from app.database.database import init_db, DB_PATH
 import uuid
 from app.database.database import get_sqlite_connection
+from app.database.auth_db import get_auth_connection
 from app.security.auth_service import hash_password
 
 from app.security.dependencies import get_current_user_and_session
@@ -146,7 +147,7 @@ def client():
 
 @pytest.fixture
 def admin_headers(client):
-    conn = get_sqlite_connection()
+    conn = get_auth_connection()
     c = conn.cursor()
     user_id = str(uuid.uuid4())
     email = f"admin_{uuid.uuid4()}@example.com"

@@ -89,7 +89,7 @@ def generate_refresh_token() -> str:
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode('utf-8')).hexdigest()
 
-def create_session(user_id: str, ip_address: str = None, user_agent: str = None) -> tuple[str, str]:
+def create_session(user_id: str, ip_address: str = None, user_agent: str = None, conn=None) -> tuple[str, str]:
     """Creates a new session and returns (session_id, raw_refresh_token)."""
     session_id = str(uuid.uuid4())
     raw_token = generate_refresh_token()
@@ -97,7 +97,10 @@ def create_session(user_id: str, ip_address: str = None, user_agent: str = None)
     
     expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     
-    conn = get_auth_connection()
+    close_conn = False
+    if conn is None:
+        conn = get_auth_connection()
+        close_conn = True
     try:
         cursor = conn.cursor()
         cursor.execute("""
@@ -106,7 +109,8 @@ def create_session(user_id: str, ip_address: str = None, user_agent: str = None)
         """, (session_id, user_id, token_hash, expires_at.strftime('%Y-%m-%d %H:%M:%S'), ip_address, user_agent))
         conn.commit()
     finally:
-        conn.close()
+        if close_conn:
+            conn.close()
         
     return session_id, raw_token
 
@@ -141,8 +145,11 @@ def _get_lockout_duration(failed_count: int) -> int:
     else:
         return LOCKOUT_MINUTES_3
 
-def handle_failed_login(email: str):
-    conn = get_auth_connection()
+def handle_failed_login(email: str, conn=None):
+    close_conn = False
+    if conn is None:
+        conn = get_auth_connection()
+        close_conn = True
     try:
         cursor = conn.cursor()
         cursor.execute("SELECT id, failed_login_count FROM users WHERE email = ? COLLATE NOCASE", (email,))
@@ -154,29 +161,24 @@ def handle_failed_login(email: str):
             
             if lockout_mins > 0:
                 lockout_until = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=lockout_mins)
-                cursor.execute("""
-                    UPDATE users 
-                    SET failed_login_count = ?, lockout_until = ?, is_locked = 1
-                    WHERE id = ?
-                """, (failed_count, lockout_until.strftime('%Y-%m-%d %H:%M:%S'), user_id))
+                cursor.execute(
+                    "UPDATE users SET failed_login_count = ?, is_locked = 1, lockout_until = ? WHERE id = ?",
+                    (failed_count, lockout_until.strftime('%Y-%m-%d %H:%M:%S'), user_id)
+                )
             else:
-                cursor.execute("""
-                    UPDATE users 
-                    SET failed_login_count = ?
-                    WHERE id = ?
-                """, (failed_count, user_id))
+                cursor.execute("UPDATE users SET failed_login_count = ? WHERE id = ?", (failed_count, user_id))
             conn.commit()
     finally:
-        conn.close()
+        if close_conn:
+            conn.close()
 
-def handle_successful_login(user_id: str):
-    conn = get_auth_connection()
+def handle_successful_login(user_id: str, conn=None):
+    close_conn = False
+    if conn is None:
+        conn = get_auth_connection()
+        close_conn = True
     try:
         cursor = conn.cursor()
-        # last_login_at is recorded here so the platform user console can show
-        # genuine account activity rather than leaving the column permanently
-        # NULL. It is written on the same statement that clears the lockout
-        # counters, so a successful login is recorded atomically.
         cursor.execute("""
             UPDATE users 
             SET failed_login_count = 0, is_locked = 0, lockout_until = NULL,
@@ -185,7 +187,8 @@ def handle_successful_login(user_id: str):
         """, (datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S'), user_id))
         conn.commit()
     finally:
-        conn.close()
+        if close_conn:
+            conn.close()
 
 # 4. SECURE BOOTSTRAP
 

@@ -135,36 +135,37 @@ class _PgCursor:
 class _PgConnection:
     """Connection wrapper handing out translating cursors."""
 
-    def __init__(self, conn: Any):
+    def __init__(self, conn, pool=None):
         self._conn = conn
+        self._pool = pool
+
+    def close(self):
+        if self._pool:
+            try:
+                self._conn.rollback()
+            except:
+                pass
+            self._pool.putconn(self._conn)
+        else:
+            self._conn.close()
 
     def cursor(self, *args, **kwargs):
         return _PgCursor(self._conn.cursor(*args, **kwargs))
 
-    def execute(self, sql: str, params: Any = None):
-        """Connection-level execute, as sqlite3 provides.
-
-        sqlite3.Connection.execute() implicitly creates a cursor; psycopg2's
-        connection has no such method. A great deal of existing code calls
-        conn.execute(...) directly, and without this every one of those call
-        sites raises AttributeError the moment the backend is Postgres - which
-        is exactly what a throwaway-Postgres run surfaced.
-
-        Returning the cursor matches sqlite3, so `cursor = conn.execute(...)`
-        followed by `cursor.fetchone()` keeps working unchanged.
-        """
+    def execute(self, sql, params=None):
         cursor = self.cursor()
         cursor.execute(sql, params)
         return cursor
 
     def __getattr__(self, item):
+        if item == "close": return self.close
         return getattr(self._conn, item)
 
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
-        self._conn.__exit__(*exc) if hasattr(self._conn, "__exit__") else None
+        self.close()
         return False
 
 
@@ -172,24 +173,24 @@ class _PgConnection:
 # Connection
 # ---------------------------------------------------------------------------
 
-def get_auth_connection(timeout: float = 30.0):
-    """Return a connection to the identity store.
+_auth_pool = None
 
-    Postgres when ``AUTH_DATABASE_URL`` is configured, otherwise SQLite - which
-    remains the correct choice for development and tests and is still refused in
-    production by the P0-5 policy guard.
-    """
+def get_auth_connection(timeout: float = 30.0):
+    global _auth_pool
     url = auth_database_url()
     if url:
         import psycopg2
-
-        conn = psycopg2.connect(url, connect_timeout=int(timeout))
+        from psycopg2 import pool
+        
+        if _auth_pool is None:
+            _auth_pool = pool.ThreadedConnectionPool(1, 20, url, connect_timeout=int(timeout))
+            
+        conn = _auth_pool.getconn()
         conn.autocommit = False
         with conn.cursor() as cur:
-            cur.execute('SET search_path TO public')
+            cur.execute("SET search_path TO public")
         
-        return _PgConnection(conn)
-
+        return _PgConnection(conn, pool=_auth_pool)
     # Imported here to avoid a circular import at module load.
     from app.database.database import DB_PATH
 
@@ -297,8 +298,8 @@ def init_auth_schema() -> bool:
     conn = get_auth_connection()
     try:
         cursor = conn.cursor()
-        for statement in POSTGRES_AUTH_DDL:
-            cursor.execute(statement)
+        combined_ddl = ";\n".join(POSTGRES_AUTH_DDL) + ";"
+        cursor.execute(combined_ddl)
         cursor.execute("SELECT 1 FROM system_state WHERE id = 1")
         if not cursor.fetchone():
             cursor.execute("INSERT INTO system_state (id, is_bootstrapped) VALUES (1, 0)")

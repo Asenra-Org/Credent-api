@@ -64,7 +64,7 @@ def login(req: LoginRequest, request: Request, response: Response):
 
         generic_fail = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials or account locked")
         if not user_row:
-            handle_failed_login(req.email)
+            handle_failed_login(req.email, conn=conn)
             raise generic_fail
 
         user_id, pwd_hash, is_active, is_locked, lockout_until, mfa_enabled = user_row
@@ -83,7 +83,7 @@ def login(req: LoginRequest, request: Request, response: Response):
                 raise generic_fail
 
         if not verify_password(req.password, pwd_hash):
-            handle_failed_login(req.email)
+            handle_failed_login(req.email, conn=conn)
             raise generic_fail
 
         cursor.execute("SELECT tenant_id FROM tenant_memberships WHERE user_id = ? AND is_active = 1 LIMIT 1", (user_id,))
@@ -97,11 +97,11 @@ def login(req: LoginRequest, request: Request, response: Response):
             challenge_token = generate_mfa_challenge_token(user_id, tenant_id)
             return {"mfa_required": True, "challenge_token": challenge_token}
 
-        handle_successful_login(user_id)
+        handle_successful_login(user_id, conn=conn)
         ip_addr = request.client.host if request.client else None
         user_agent = request.headers.get("User-Agent")
 
-        session_id, raw_refresh = create_session(user_id, ip_addr, user_agent)
+        session_id, raw_refresh = create_session(user_id, ip_addr, user_agent, conn=conn)
         access_token = generate_access_token(user_id, tenant_id, session_id)
 
         response.set_cookie(key="refresh_token", value=raw_refresh, httponly=True, secure=(os.getenv("APP_ENV") == "production"), samesite=("None" if os.getenv("APP_ENV") == "production" else "Lax"), max_age=86400)
@@ -128,12 +128,12 @@ def mfa_verify_login(req: MFALoginRequest, request: Request, response: Response)
             handle_failed_mfa(user_id)
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid MFA code")
 
-        handle_successful_login(user_id)
+        handle_successful_login(user_id, conn=conn)
 
         ip_addr = request.client.host if request.client else None
         user_agent = request.headers.get("User-Agent")
 
-        session_id, raw_refresh = create_session(user_id, ip_addr, user_agent)
+        session_id, raw_refresh = create_session(user_id, ip_addr, user_agent, conn=conn)
         access_token = generate_access_token(user_id, tenant_id, session_id)
 
         response.set_cookie(key="refresh_token", value=raw_refresh, httponly=True, secure=(os.getenv("APP_ENV") == "production"), samesite=("None" if os.getenv("APP_ENV") == "production" else "Lax"), max_age=86400)

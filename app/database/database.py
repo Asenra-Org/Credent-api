@@ -413,16 +413,18 @@ def init_app_schema() -> bool:
         cursor = conn.cursor()
 
         # Phase 1: tables that do not exist at all.
-        for statement in POSTGRES_APP_DDL:
-            cursor.execute(statement)
-
+        combined_ddl = ";\n".join(POSTGRES_APP_DDL) + ";"
+        
         # Phase 2: reconcile pre-existing tables, column by column.
+        alter_statements = []
         for table, columns in POSTGRES_APP_COLUMNS.items():
             for column, coltype in columns:
-                cursor.execute(
-                    'ALTER TABLE ' + table + ' ADD COLUMN IF NOT EXISTS "'
-                    + column + '" ' + coltype
-                )
+                alter_statements.append('ALTER TABLE ' + table + ' ADD COLUMN IF NOT EXISTS "' + column + '" ' + coltype + ';')
+        
+        combined_ddl += "\n" + "\n".join(alter_statements)
+        
+        cursor.execute(combined_ddl)
+
 
         # Phase 3: indexes and append-only enforcement.
         for statement in POSTGRES_APP_INDEXES:
