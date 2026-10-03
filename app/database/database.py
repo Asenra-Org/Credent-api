@@ -429,6 +429,7 @@ def init_app_schema() -> bool:
             cursor.execute(statement)
         for statement in POSTGRES_AUDIT_APPEND_ONLY:
             cursor.execute(statement)
+        conn.commit()
 
         # Seed the default policy row only when absent, matching SQLite.
         cursor.execute("SELECT 1 FROM institution_policies WHERE institution_id = ?", ('DEFAULT',))

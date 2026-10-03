@@ -185,6 +185,9 @@ def get_auth_connection(timeout: float = 30.0):
 
         conn = psycopg2.connect(url, connect_timeout=int(timeout))
         conn.autocommit = False
+        with conn.cursor() as cur:
+            cur.execute('SET search_path TO public')
+        
         return _PgConnection(conn)
 
     # Imported here to avoid a circular import at module load.
