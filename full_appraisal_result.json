@@ -1,0 +1,427 @@
+{
+  "status": "success",
+  "case_id": "CASE_4D778888550C",
+  "appraisal_id": "APPRAISAL_1788458408",
+  "individual_agent_outputs": {
+    "ingestion": {
+      "extraction_degraded": true,
+      "degradation_reason": "AI extraction failed. Structured attempt: Bypassed. Raw attempt: No JSON found in response.",
+      "company_name": "Unknown Entity",
+      "sector": "Unknown",
+      "total_revenue": null,
+      "total_debt": null,
+      "shareholder_equity": null,
+      "current_assets": null,
+      "current_liabilities": null,
+      "base_score": 65,
+      "qualitative_notes": "Document could not be fully processed. Manual review required.",
+      "financial_commitments": [],
+      "legal_risks": [
+        "Unable to extract \u2014 manual review required"
+      ],
+      "sanction_details": [],
+      "citations": {
+        "revenue": null,
+        "debt": null,
+        "equity": null,
+        "total_revenue": null,
+        "total_debt": null,
+        "shareholder_equity": null,
+        "dscr": null,
+        "current_ratio": null
+      }
+    },
+    "financial_health": {
+      "status": "skipped",
+      "company_name": "Unknown Entity",
+      "financial_health_score": 65,
+      "risk_level": "Medium",
+      "ratios": {},
+      "cash_flow_assessment": {
+        "status": "Stable"
+      },
+      "analysis_notes": [
+        "Financial analysis skipped \u2014 no P&L data detected."
+      ],
+      "recommendation": "Manual review required."
+    },
+    "management_quality": {
+      "status": "error",
+      "company_name": "Unknown Entity",
+      "management_score": 0.0,
+      "risk_level": "Undetermined",
+      "requires_manual_review": true,
+      "fallback_reason": "missing_promoter",
+      "is_knockout": false,
+      "promoter_analysis": [],
+      "governance_assessment": {
+        "board_independence": "Undetermined",
+        "regulatory_compliance": "Undetermined",
+        "risk_level": "Undetermined"
+      }
+    },
+    "sector_context": {
+      "outlook": "Negative",
+      "growth_rate_projected": "6.3%",
+      "risk_score": 6,
+      "risk_level": "Medium",
+      "risk_factors": [
+        "RBI monetary policy remaining accretive with elevated repo rates constraining credit demand and increasing cost of working capital.",
+        "Food-led inflation and volatile crude oil prices compressing margins for energy-intensive and discom borrowers.",
+        "Rising input-output price pass-through uncertainty under GST regime limiting predictability for manufacturers and traders.",
+        "Cyclical demand slowdown in rural and discretionary consumption segments eroding top-line visibility.",
+        "Trade policy unpredictability including anti-dumping pulses and import duty swings disrupting supply-chain-dependent enterprises.",
+        "Competing intensity across consumer and enterprise segments intensified by digital-native entrants and platform economies.",
+        "Technology disruption from AI adoption and automation widening the productivity gap and rendering legacy assets uneconomic.",
+        "Persistent INR-USD volatility aggravating foreign-currency debt servicing for import-dependent sectors.",
+        "Environmental, Social, and Governance regulatory tightening increasing compliance burden and stranded asset risk.",
+        "Rising NPA stress in unsecured segments due to livelihood shocks and inadequate safety nets in informal labor markets."
+      ],
+      "sector": "Unknown",
+      "rbi_policy_impact": [
+        {
+          "circular_ref": "N/A",
+          "summary": "Unable to retrieve RBI circular information.",
+          "impact": "Unknown"
+        }
+      ]
+    },
+    "integrity_check": {
+      "status": "skipped",
+      "flags": [],
+      "warnings": [
+        "Integrity cross-validation skipped \u2014 no GST or bank data provided."
+      ]
+    }
+  },
+  "combined_decision": {
+    "finding": "Extraction Status",
+    "value": "AI extraction failed; no JSON found",
+    "source_document": "Appraisal Data / PDF Extraction",
+    "page": "NOT PROVIDED",
+    "status": "UNVERIFIED",
+    "decision": "ANALYSIS_INCOMPLETE",
+    "recommended_loan_amount": "UNAVAILABLE",
+    "recommended_interest_rate": "UNAVAILABLE",
+    "decision_rationale": "Credit recommendation unavailable: required analysis did not complete (cam_generator, document_ingestion). This is a system failure, not an underwriting conclusion."
+  },
+  "evidence_trail": [
+    {
+      "category": "Financial Ratios",
+      "source_agent": "FinancialHealthAgent",
+      "severity": "INFO",
+      "title": "Financial Analysis Metric Note",
+      "description": "Financial analysis skipped \u2014 no P&L data detected.",
+      "recommendation": "Check the underlying values and perform manual calculation if necessary.",
+      "confidence": "High"
+    },
+    {
+      "category": "Sector/Macro Risk",
+      "source_agent": "SectorContextAgent",
+      "severity": "MEDIUM",
+      "title": "Negative Sector Outlook",
+      "description": "The macro industry sector Unknown outlook is Negative.",
+      "recommendation": "Limit exposure limits and implement stricter loan covenants.",
+      "confidence": "Medium"
+    },
+    {
+      "category": "Sector/Macro Risk",
+      "source_agent": "SectorContextAgent",
+      "severity": "INFO",
+      "title": "Sector Headwind Identified",
+      "description": "RBI monetary policy remaining accretive with elevated repo rates constraining credit demand and increasing cost of working capital.",
+      "recommendation": "Monitor industry developments and compare against borrower operational metrics.",
+      "confidence": "Medium"
+    },
+    {
+      "category": "Sector/Macro Risk",
+      "source_agent": "SectorContextAgent",
+      "severity": "INFO",
+      "title": "Sector Headwind Identified",
+      "description": "Food-led inflation and volatile crude oil prices compressing margins for energy-intensive and discom borrowers.",
+      "recommendation": "Monitor industry developments and compare against borrower operational metrics.",
+      "confidence": "Medium"
+    },
+    {
+      "category": "Sector/Macro Risk",
+      "source_agent": "SectorContextAgent",
+      "severity": "INFO",
+      "title": "Sector Headwind Identified",
+      "description": "Rising input-output price pass-through uncertainty under GST regime limiting predictability for manufacturers and traders.",
+      "recommendation": "Monitor industry developments and compare against borrower operational metrics.",
+      "confidence": "Medium"
+    },
+    {
+      "category": "Sector/Macro Risk",
+      "source_agent": "SectorContextAgent",
+      "severity": "INFO",
+      "title": "Sector Headwind Identified",
+      "description": "Cyclical demand slowdown in rural and discretionary consumption segments eroding top-line visibility.",
+      "recommendation": "Monitor industry developments and compare against borrower operational metrics.",
+      "confidence": "Medium"
+    },
+    {
+      "category": "Sector/Macro Risk",
+      "source_agent": "SectorContextAgent",
+      "severity": "INFO",
+      "title": "Sector Headwind Identified",
+      "description": "Trade policy unpredictability including anti-dumping pulses and import duty swings disrupting supply-chain-dependent enterprises.",
+      "recommendation": "Monitor industry developments and compare against borrower operational metrics.",
+      "confidence": "Medium"
+    },
+    {
+      "category": "Sector/Macro Risk",
+      "source_agent": "SectorContextAgent",
+      "severity": "INFO",
+      "title": "Sector Headwind Identified",
+      "description": "Competing intensity across consumer and enterprise segments intensified by digital-native entrants and platform economies.",
+      "recommendation": "Monitor industry developments and compare against borrower operational metrics.",
+      "confidence": "Medium"
+    },
+    {
+      "category": "Sector/Macro Risk",
+      "source_agent": "SectorContextAgent",
+      "severity": "INFO",
+      "title": "Sector Headwind Identified",
+      "description": "Technology disruption from AI adoption and automation widening the productivity gap and rendering legacy assets uneconomic.",
+      "recommendation": "Monitor industry developments and compare against borrower operational metrics.",
+      "confidence": "Medium"
+    },
+    {
+      "category": "Sector/Macro Risk",
+      "source_agent": "SectorContextAgent",
+      "severity": "INFO",
+      "title": "Sector Headwind Identified",
+      "description": "Persistent INR-USD volatility aggravating foreign-currency debt servicing for import-dependent sectors.",
+      "recommendation": "Monitor industry developments and compare against borrower operational metrics.",
+      "confidence": "Medium"
+    },
+    {
+      "category": "Sector/Macro Risk",
+      "source_agent": "SectorContextAgent",
+      "severity": "INFO",
+      "title": "Sector Headwind Identified",
+      "description": "Environmental, Social, and Governance regulatory tightening increasing compliance burden and stranded asset risk.",
+      "recommendation": "Monitor industry developments and compare against borrower operational metrics.",
+      "confidence": "Medium"
+    },
+    {
+      "category": "Sector/Macro Risk",
+      "source_agent": "SectorContextAgent",
+      "severity": "INFO",
+      "title": "Sector Headwind Identified",
+      "description": "Rising NPA stress in unsecured segments due to livelihood shocks and inadequate safety nets in informal labor markets.",
+      "recommendation": "Monitor industry developments and compare against borrower operational metrics.",
+      "confidence": "Medium"
+    }
+  ],
+  "explanation": "### **Credit Appraisal Rationale**\n\n**Applicant:** [Applicant Name Redacted]\n**Credit Facility:** [Facility Type Redacted]\n**Date:** [Current Date]\n**Appraising Officer:** Senior Chief Credit Officer\n\n---\n\n**1. Score and Decision Derivation**\n\nThis credit appraisal is based on a critical evidence gap and a severely adverse macroeconomic outlook.\n\n*   **Core Financial Assessment:** The provided audit trail confirms a **critical deficiency**: `Financial analysis skipped \u2014 no P&L data detected.` As benchmark financial analysis (Profit & Loss, Balance Sheet, Cash Flow) is the foundational component of any credit appraisal, its absence precludes the calculation of a robust internal risk score. Without this data, an assessment of the applicant\u2019s repayment capacity, profitability, and operational stability is impossible.\n*   **Decision Rationale:** The combination of complete financial information unavailability and the confluence of multiple, severe, and systemic negative macroeconomic factors places the applicant\u2019s risk profile outside the acceptable underwriting tolerance. The decision is to **IMPAIRED / REJECT** the application at this stage, subject to the requirement of a full, audited financial information package for a complete review.\n\n---\n\n**2. Positive Factors**\n\nThe following are observations regarding factors that would support credit approval:\n\n*   The evidence trail provided **does not contain any positive indicators**.\n*   There are **no strong financial metrics** available for review due to the absence of P&L and related data.\n*   **No background checks, KYC verification, or evidence of stable operational conditions** were found in the provided trail to mitigate the identified risks.\n\n---\n\n**3. Negative Factors**\n\nThe following risks, as evidenced in the audit trail, form a comprehensive picture of a high-risk lending environment:\n\n*   **Critical Information Deficiency:\n    *   The inability to conduct financial analysis due to missing P&L data represents a fundamental credit risk, rendering any independent assessment of the borrower's financial health impossible.\n\n*   **Severe Macroeconomic and Sectoral Headwinds:\n    *   **Monetary Constriction:** Elevated RBI repo rates are increasing working capital costs and constraining credit demand.\n    *   **Inflation and Margin Compression:** Food-led inflation, combined with volatile crude oil prices, is compressing margins for energy-intensive and power distribution companies (Discoms).\n    *   **Demand Volatility:** A cyclical slowdown in rural and discretionary consumption is eroding revenue visibility across multiple sectors.\n    *   **Supply Chain and Price Uncertainty:** Input-output price pass-through uncertainty under the GST regime is creating unpredictable cost structures for manufacturers and traders.\n    *   **Trade Policy Risk:** Unpredictable trade policies, including anti-dumping duties and import tax swings, are disrupting supply chains for import-dependent enterprises.\n    *   **Competitive Disruption:** Intense competition from digital-native entrants and platform economies is pressuring traditional business models across consumer and enterprise segments.\n    *   **Technological Obsolescence:** Rapid AI adoption and automation are widening the productivity gap and risk, potentially rendering legacy assets unserviceable.\n    *   **Currency-Related Risk:** Persistent INR-USD volatility is aggravating the foreign debt servicing burden for import-dependent sectors.\n    *   **NPA Stress:** Rising non-performing assets in unsecured lending segments are a sign of broader lending portfolio weakness and inadequate risk buffers.\n    *   **Regulatory Escalation:** Increasing Environmental, Social, and Governance (ESG) regulatory requirements are elevating compliance costs and increasing the risk of stranded assets.\n\n**Conclusion & Recommendation**\n\nThe credit request is **IMPAIRED / REJECTED**. The evidence trail is overwhelmingly negative, centered on a fundamental inability to assess the borrower's financials and a highly restrictive macroeconomic environment. To reconsider this application, the credit committee mandates the submission of a comprehensive audited financial statement package (including P&L, Balance Sheet, and Cash Flow) along with a detailed business plan and collateral documents, along with a full KYC and background check, for a re-appraisal under a restricted policy.",
+  "routing_flags": {
+    "has_financials": false,
+    "has_promoters": true,
+    "has_gst_bank_data": false
+  },
+  "evidence_citations": {
+    "revenue": null,
+    "debt": null,
+    "equity": null,
+    "dscr": null,
+    "current_ratio": null
+  },
+  "forensics": {
+    "is_suspicious": false,
+    "flags": [],
+    "metadata": {
+      "creator": "(unspecified)",
+      "producer": "ReportLab PDF Library - www.reportlab.com"
+    }
+  },
+  "forensics_penalty": {
+    "original_score": 65,
+    "adjusted_score": 65,
+    "penalty_applied": false,
+    "penalty_points": 0
+  },
+  "filename": "test_financial.pdf",
+  "tables_found": 0,
+  "ai_analysis": {
+    "extraction_degraded": true,
+    "degradation_reason": "AI extraction failed. Structured attempt: Bypassed. Raw attempt: No JSON found in response.",
+    "company_name": "Unknown Entity",
+    "sector": "Unknown",
+    "total_revenue": null,
+    "total_debt": null,
+    "shareholder_equity": null,
+    "current_assets": null,
+    "current_liabilities": null,
+    "base_score": 65,
+    "qualitative_notes": "Document could not be fully processed. Manual review required.",
+    "financial_commitments": [],
+    "legal_risks": [
+      "Unable to extract \u2014 manual review required"
+    ],
+    "sanction_details": [],
+    "citations": {
+      "revenue": null,
+      "debt": null,
+      "equity": null,
+      "total_revenue": null,
+      "total_debt": null,
+      "shareholder_equity": null,
+      "dscr": null,
+      "current_ratio": null
+    }
+  },
+  "extraction_degraded": true,
+  "degradation_reason": "AI extraction failed. Structured attempt: Bypassed. Raw attempt: No JSON found in response.",
+  "security_warnings": [],
+  "analysis_status": "FAILED",
+  "decision_allowed": false,
+  "degraded_components": [
+    "cam_generator",
+    "document_ingestion",
+    "financial_health",
+    "realtime_intelligence",
+    "risk_intelligence"
+  ],
+  "missing_required": [
+    "cam_generator",
+    "document_ingestion"
+  ],
+  "agent_results": [
+    {
+      "agent": "document_ingestion",
+      "status": "FAILED",
+      "error_code": "INVALID_OUTPUT",
+      "reason": "extraction reported degraded",
+      "retryable": false
+    },
+    {
+      "agent": "financial_health",
+      "status": "DEGRADED",
+      "error_code": "INVALID_OUTPUT",
+      "reason": "no ratios computed",
+      "retryable": false
+    },
+    {
+      "agent": "risk_intelligence",
+      "status": "DEGRADED",
+      "error_code": "INVALID_OUTPUT",
+      "reason": "no risk payload",
+      "retryable": false
+    },
+    {
+      "agent": "sector_context",
+      "status": "SUCCESS",
+      "error_code": null,
+      "reason": null,
+      "retryable": false
+    },
+    {
+      "agent": "management_quality",
+      "status": "SUCCESS",
+      "error_code": null,
+      "reason": null,
+      "retryable": false
+    },
+    {
+      "agent": "realtime_intelligence",
+      "status": "DEGRADED",
+      "error_code": "EXTERNAL_RESEARCH_UNAVAILABLE",
+      "reason": "external research unavailable",
+      "retryable": false
+    },
+    {
+      "agent": "integrity_verification",
+      "status": "SUCCESS",
+      "error_code": null,
+      "reason": null,
+      "retryable": false
+    },
+    {
+      "agent": "cam_generator",
+      "status": "FAILED",
+      "error_code": "INVALID_OUTPUT",
+      "reason": "CAM missing five_cs",
+      "retryable": false
+    }
+  ],
+  "provenance": {
+    "summary": {
+      "provider": "sarvam",
+      "model_name": "sarvam-105b",
+      "model_version": "sarvam-105b",
+      "prompt_version": "MULTIPLE",
+      "agent_version": "MULTIPLE",
+      "temperature": 0.0,
+      "provider_request_id": null,
+      "agent_count": 5,
+      "models_used": [
+        "sarvam-105b"
+      ],
+      "generated_at": "2026-09-03T18:00:08.728497+00:00"
+    },
+    "agents": [
+      {
+        "agent": "document_ingestion",
+        "provider": "sarvam",
+        "model_name": "sarvam-105b",
+        "model_version": "sarvam-105b",
+        "prompt_version": "2026-08-23.1",
+        "agent_version": "1.1.0",
+        "temperature": 0.0,
+        "provider_request_id": null,
+        "status": "COMPLETED",
+        "generated_at": "2026-09-03T18:00:08.728497+00:00"
+      },
+      {
+        "agent": "cam_generator",
+        "provider": "sarvam",
+        "model_name": "sarvam-105b",
+        "model_version": "sarvam-105b",
+        "prompt_version": "2026-08-23.2",
+        "agent_version": "1.1.0",
+        "temperature": 0.0,
+        "provider_request_id": null,
+        "status": "COMPLETED",
+        "generated_at": "2026-09-03T18:00:08.728497+00:00"
+      },
+      {
+        "agent": "financial_health",
+        "provider": "sarvam",
+        "model_name": "sarvam-105b",
+        "model_version": "sarvam-105b",
+        "prompt_version": "2026-08-23.1",
+        "agent_version": "1.0.0",
+        "temperature": 0.0,
+        "provider_request_id": null,
+        "status": "COMPLETED",
+        "generated_at": "2026-09-03T18:00:08.728497+00:00"
+      },
+      {
+        "agent": "sector_context",
+        "provider": "sarvam",
+        "model_name": "sarvam-105b",
+        "model_version": "sarvam-105b",
+        "prompt_version": "2026-08-23.1",
+        "agent_version": "1.0.0",
+        "temperature": 0.0,
+        "provider_request_id": null,
+        "status": "COMPLETED",
+        "generated_at": "2026-09-03T18:00:08.728497+00:00"
+      },
+      {
+        "agent": "management_quality",
+        "provider": "sarvam",
+        "model_name": "sarvam-105b",
+        "model_version": "sarvam-105b",
+        "prompt_version": "2026-08-23.1",
+        "agent_version": "1.0.0",
+        "temperature": 0.0,
+        "provider_request_id": null,
+        "status": "COMPLETED",
+        "generated_at": "2026-09-03T18:00:08.728497+00:00"
+      }
+    ]
+  }
+}

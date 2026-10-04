@@ -203,7 +203,11 @@ def refresh(request: Request, response: Response):
         if is_revoked:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session revoked")
 
-        exp_time = datetime.datetime.strptime(expires_at, '%Y-%m-%d %H:%M:%S').replace(tzinfo=datetime.timezone.utc)
+        if isinstance(expires_at, str):
+            exp_time = datetime.datetime.strptime(expires_at, '%Y-%m-%d %H:%M:%S').replace(tzinfo=datetime.timezone.utc)
+        else:
+            exp_time = expires_at.replace(tzinfo=datetime.timezone.utc) if expires_at.tzinfo is None else expires_at
+        
         if datetime.datetime.now(datetime.timezone.utc) > exp_time:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
 

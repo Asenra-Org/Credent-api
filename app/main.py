@@ -1,5 +1,5 @@
-# =============================================================================
-# CREDENT — AI-Powered Credit Appraisal & Risk Assessment Platform
+﻿# =============================================================================
+# CREDENT â€” AI-Powered Credit Appraisal & Risk Assessment Platform
 # A product of Asenra | https://asenra.in
 # Copyright (c) 2026 Asenra. All rights reserved.
 # Unauthorized use, reproduction, or distribution is strictly prohibited.
@@ -72,7 +72,7 @@ async def lifespan(app: FastAPI):
         except Exception as scan_err:
             print(f"[STARTUP CLEANUP] Warning: Error scanning {temp_dir}: {scan_err}")
         if cleaned_count > 0:
-            print(f"🧹 [STARTUP CLEANUP] Successfully purged {cleaned_count} orphaned temporary file(s) older than {TEMP_FILE_CLEANUP_MAX_AGE_SECONDS}s.")
+            print(f"[STARTUP CLEANUP] Successfully purged {cleaned_count} orphaned temporary file(s) older than {TEMP_FILE_CLEANUP_MAX_AGE_SECONDS}s.")
     yield
 
 # Import API routers AFTER loading the .env
@@ -101,7 +101,7 @@ async def correlation_id_middleware(request: Request, call_next):
     finally:
         correlation_id_ctx.reset(token)
 
-# CORS — allow trusted origins (Fixed Starlette allow_credentials wildcard error)
+# CORS â€” allow trusted origins (Fixed Starlette allow_credentials wildcard error)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -142,7 +142,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 # ---- Health & Status Endpoints ----
 @app.get("/")
 async def root():
-    return {"message": "Credent API is running 🚀 | Powered by Asenra"}
+    return {"message": "Credent API is running ðŸš€ | Powered by Asenra"}
 
 
 @app.get("/health")
@@ -152,7 +152,7 @@ async def health_check():
     issues = []
 
     if not os.getenv("GROQ_API_KEY"):
-        issues.append("GROQ_API_KEY not set — AI features will use fallbacks")
+        issues.append("GROQ_API_KEY not set â€” AI features will use fallbacks")
 
     if not os.path.exists("temp_uploads"):
         issues.append("temp_uploads directory missing")
