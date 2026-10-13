@@ -178,10 +178,19 @@ class TestTheEndpointAnswersImmediately:
 
     def test_the_route_exists_and_is_role_guarded(self):
         from app.main import app
+        from fastapi.routing import _IncludedRouter
 
-        route = next(r for r in app.routes
-                     if getattr(r, "path", "") == "/api/v1/documents/ingest/case")
-        assert "POST" in route.methods
+        matching = []
+        for r in app.routes:
+            if isinstance(r, _IncludedRouter):
+                for ctx in r.effective_route_contexts():
+                    if ctx.path == "/api/v1/documents/ingest/case":
+                        matching.append(ctx)
+            elif getattr(r, "path", "") == "/api/v1/documents/ingest/case":
+                matching.append(r)
+
+        assert len(matching) > 0
+        assert any("POST" in getattr(m, "methods", []) for m in matching)
 
     def test_a_case_with_no_appraisable_document_is_refused(self):
         """A case that can never be appraised would leave a client polling forever."""

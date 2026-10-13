@@ -57,7 +57,8 @@ def has_production_database(
 ) -> bool:
     url = supabase_url if supabase_url is not None else os.getenv("SUPABASE_URL")
     key = supabase_key if supabase_key is not None else os.getenv("SUPABASE_KEY")
-    return bool(url and key)
+    db_url = os.getenv("DATABASE_URL") or os.getenv("AUTH_DATABASE_URL")
+    return bool((url and key) or db_url)
 
 
 def enforce_database_policy(
@@ -66,9 +67,9 @@ def enforce_database_policy(
 ) -> str:
     """Validate the database configuration for the current environment.
 
-    Returns the backend that will be used ("supabase" or "sqlite").
+    Returns the backend that will be used ("supabase", "postgres" or "sqlite").
     Raises ProductionDatabaseError in production when no production database is
-    configured - the application must not start as a lending system without its
+    configured — the application must not start as a lending system without its
     durable store.
     """
     env = current_environment()
@@ -77,11 +78,16 @@ def enforce_database_policy(
     if env == PRODUCTION:
         if not configured:
             raise ProductionDatabaseError(
-                "APP_ENV=production requires SUPABASE_URL and SUPABASE_KEY. "
+                "APP_ENV=production requires a persistent database (DATABASE_URL, "
+                "AUTH_DATABASE_URL, or SUPABASE_URL/KEY). "
                 "Refusing to start: SQLite fallback is disabled in production "
                 "because lending records would be written to ephemeral storage."
             )
-        return "supabase"
+        url = supabase_url if supabase_url is not None else os.getenv("SUPABASE_URL")
+        key = supabase_key if supabase_key is not None else os.getenv("SUPABASE_KEY")
+        if url and key:
+            return "supabase"
+        return "postgres"
 
     return "supabase" if configured else "sqlite"
 

@@ -466,9 +466,6 @@ def init_db():
     if uses_postgres_app():
         init_app_schema()
         print("[STARTUP] Application store: Postgres schema verified.")
-        sb = _get_supabase()
-        if not sb:
-            enforce_database_policy(SUPABASE_URL, SUPABASE_KEY)
         return
 
     # Development / test: SQLite. assert_sqlite_permitted() inside
@@ -858,10 +855,12 @@ def init_db():
     sb = _get_supabase()
     if sb:
         print("[OK] Supabase integration active.")
+    elif uses_postgres_app():
+        print("[OK] Postgres durable application store active.")
     else:
         # [P0-5] Fail fast in production; warn only outside it.
         enforce_database_policy(SUPABASE_URL, SUPABASE_KEY)
-        print("[WARN] Supabase not configured. Using local SQLite.")
+        print("[WARN] Persistent DB not configured. Using local SQLite.")
 
 
 # =============================================================================
