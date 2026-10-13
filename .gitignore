@@ -88,3 +88,20 @@ app/database/*.sqlite3
 # [P1-2] Uploaded borrower documents and local document store must never be committed.
 temp_uploads/
 document_store/
+
+# Local test artifacts and screenshots
+*.png
+*.jpg
+*.jpeg
+temp.txt
+test_analytics_output.txt
+full_appraisal_result.json
+test_financial.pdf
+check_*.py
+fix_*.py
+query.py
+read_pdf.py
+render_manager.py
+reset_password.py
+restore_db.py
+generate_dossiers.py

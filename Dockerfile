@@ -14,11 +14,9 @@ ENV PYTHONUNBUFFERED 1
 # INSTALL SYSTEM DEPENDENCIES FOR OCR AND PDF PROCESSING
 # - tesseract-ocr: For OCR text extraction
 # - poppler-utils: For pdf2image (PDF to image conversion)
-# - default-jre: Required for tabula-py (Java-based table extraction)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     poppler-utils \
-    default-jre \
     build-essential \
     gcc \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -41,5 +39,5 @@ RUN mkdir -p /app/app/database && chmod 777 /app/app/database
 EXPOSE 8000
 
 # START THE APPLICATION
-# We use 0.0.0.0 to allow external access within the container
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Dynamically binds to $PORT provided by Render or defaults to 8000
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
